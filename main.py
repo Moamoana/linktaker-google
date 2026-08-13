@@ -25,9 +25,13 @@ from config import (
     FETCH_MODE,
     OUT_FILE_BING,
     OUT_FILE_GOOGLE,
+    OUT_FILE_YAHOO,
+    OUT_FILE_DDG,
     PROXIES_FILE,
     URLS_FILE_BING,
     URLS_FILE_GOOGLE,
+    URLS_FILE_YAHOO,
+    URLS_FILE_DDG,
     USE_PROXY,
 )
 from core.browser_manager import (
@@ -56,8 +60,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _ENGINE_MAP: dict[str, tuple[str, str]] = {
-    "google": (URLS_FILE_GOOGLE, OUT_FILE_GOOGLE),
-    "bing":   (URLS_FILE_BING,   OUT_FILE_BING),
+    "google":     (URLS_FILE_GOOGLE, OUT_FILE_GOOGLE),
+    "bing":       (URLS_FILE_BING,   OUT_FILE_BING),
+    "yahoo":      (URLS_FILE_YAHOO,  OUT_FILE_YAHOO),
+    "duckduckgo": (URLS_FILE_DDG,    OUT_FILE_DDG),
 }
 
 
@@ -69,6 +75,12 @@ def _build_engine(name: str, browser_mgr: BrowserManager | None):
     if name == "bing":
         from engines.bing import BingEngine
         return BingEngine(browser_mgr)
+    if name == "yahoo":
+        from engines.yahoo import YahooEngine
+        return YahooEngine(browser_mgr)
+    if name == "duckduckgo":
+        from engines.duckduckgo import DuckDuckGoEngine
+        return DuckDuckGoEngine(browser_mgr)
     raise ValueError(f"Unknown engine: {name!r}")
 
 
@@ -80,7 +92,7 @@ def run(engine_name: str, proxies: list[str], auth: dict | None) -> None:
     """Execute a single engine's collection run.
 
     Args:
-        engine_name: One of ``"google"`` or ``"bing"``.
+        engine_name: One of ``"google"``, ``"bing"``, ``"yahoo"``, or ``"duckduckgo"``.
         proxies:     List of proxy strings (may be empty).
         auth:        Basic-auth credentials dict, or ``None``.
     """
@@ -123,21 +135,23 @@ def run(engine_name: str, proxies: list[str], auth: dict | None) -> None:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="main.py",
-        description="News Link Harvester — collect article URLs from Google / Bing",
+        description="News Link Harvester — collect article URLs from Google / Bing / Yahoo / DuckDuckGo",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
             "  python main.py --engine google\n"
             "  python main.py --engine bing\n"
+            "  python main.py --engine yahoo\n"
+            "  python main.py --engine duckduckgo\n"
             "  python main.py --engine all\n"
         ),
     )
     parser.add_argument(
         "--engine",
-        choices=["google", "bing", "all"],
+        choices=["google", "bing", "yahoo", "duckduckgo", "all"],
         default="google",
         metavar="ENGINE",
-        help="Search engine to harvest (google | bing | all).  Default: google",
+        help="Search engine to harvest (google | bing | yahoo | duckduckgo | all).  Default: google",
     )
     return parser.parse_args()
 
@@ -148,7 +162,7 @@ def main() -> None:
     proxies = read_proxies(PROXIES_FILE) if USE_PROXY else []
     auth = read_auth(AUTH_FILE)
 
-    targets = ["google", "bing"] if args.engine == "all" else [args.engine]
+    targets = ["google", "bing", "yahoo", "duckduckgo"] if args.engine == "all" else [args.engine]
 
     for engine_name in targets:
         run(engine_name, proxies, auth)

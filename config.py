@@ -21,6 +21,12 @@ OUT_FILE_GOOGLE:  str = "output.txt"
 URLS_FILE_BING:   str = "url_bing.txt"
 OUT_FILE_BING:    str = "bing_without_site/output_bing.txt"
 
+URLS_FILE_YAHOO:  str = "url_yahoo.txt"
+OUT_FILE_YAHOO:   str = "output_yahoo.txt"
+
+URLS_FILE_DDG:    str = "url_ddg.txt"
+OUT_FILE_DDG:     str = "output_ddg.txt"
+
 PROXIES_FILE:     str = "proxies.txt"
 AUTH_FILE:        str = "auth.json"
 
