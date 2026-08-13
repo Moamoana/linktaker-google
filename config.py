@@ -39,13 +39,16 @@ MAX_PAGES_PER_SEARCH:    int   = 100
 CONSECUTIVE_EMPTY_PAGES: int   = 5
 REQUEST_TIMEOUT:         int   = 10      # seconds per HTTP request
 PARALLEL_WORKERS:        int   = 5
-USE_PROXY:               bool  = False
 RETRY_FAILED_PAGES:      int   = 3
 USE_CLOUDFLARE_BYPASS:   bool  = True
 
 # Fetch mode — controls which HTTP backend is used.
-# Options: "playwright" | "curl" | "auto" (curl first, Playwright fallback)
-FETCH_MODE: str = "playwright"
+# Fetch Mode & Network
+# 'playwright' = Use real browser (slower, but handles JS/CAPTCHA)
+# 'auto' = Try curl first, fallback to Playwright
+FETCH_MODE:       str = "playwright"
+USE_PROXY:        bool = False
+USE_SECURE_DNS:   bool = True
 
 
 # ---------------------------------------------------------------------------

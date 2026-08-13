@@ -12,7 +12,7 @@ import logging
 import random
 from typing import Optional
 
-from config import CAPTCHA_WAIT_TIMEOUT, USE_PROXY, USER_AGENTS
+from config import CAPTCHA_WAIT_TIMEOUT, USE_PROXY, USER_AGENTS, USE_SECURE_DNS
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +122,13 @@ class BrowserManager:
             "headless": False,
             "args": list(_LAUNCH_ARGS),
         }
+        if USE_SECURE_DNS:
+            launch_kwargs["args"].extend([
+                "--enable-features=SecureDns",
+                "--force-fieldtrials=SecureDns/Enable",
+                "--force-fieldtrial-params=SecureDns.Enable:Mode/secure/Templates/https%3A%2F%2Fcloudflare-dns.com%2Fdns-query"
+            ])
+            
         if self.proxy and USE_PROXY:
             launch_kwargs["proxy"] = {"server": self.proxy}
 
