@@ -4,6 +4,9 @@ import curl_cffi.requests as requests
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse, quote_plus
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import subprocess, sys, os
+import codecs
+if hasattr(sys.stdout, "buffer") and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
+    sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'replace')
 import time
 import random
 from bs4 import BeautifulSoup
@@ -33,7 +36,7 @@ except ImportError:
     print("⚠️  playwright not installed. Install with: pip install playwright && playwright install chromium")
 
 try:
-    from playwright_stealth import stealth_sync
+    from playwright_stealth import Stealth
     STEALTH_AVAILABLE = True
 except ImportError:
     STEALTH_AVAILABLE = False
@@ -52,12 +55,13 @@ URLS_FILE = "url.txt"
 OUT_FILE = "output.txt"
 PROXIES_FILE = "proxies.txt"
 AUTH_FILE = "auth.json"
-RUN_BATCH = True
+RUN_BATCH = False
 
-MAX_PAGES_PER_SEARCH = 10
-WAIT_SEC = 20
+MAX_PAGES_PER_SEARCH = 30
+# Berhenti jika X halaman berurutan tidak menemukan link baru
+CONSECUTIVE_EMPTY_PAGES = 3
+WAIT_SEC = 5
 PARALLEL_WORKERS = 5
-CONSECUTIVE_EMPTY_PAGES = 2
 USE_PROXY = False
 RETRY_FAILED_PAGES = 3
 USE_CLOUDFLARE_BYPASS = True
@@ -297,7 +301,7 @@ class BrowserManager:
 
         page = self._context.new_page()
         if STEALTH_AVAILABLE:
-            stealth_sync(page)
+            Stealth().apply_stealth_sync(page)
 
         try:
             page.set_default_timeout(0)
@@ -326,7 +330,7 @@ class BrowserManager:
 
         page = self._context.new_page()
         if STEALTH_AVAILABLE:
-            stealth_sync(page)
+            Stealth().apply_stealth_sync(page)
 
         all_links = set()
         consecutive_empty = 0
@@ -902,6 +906,14 @@ def main():
         print("❌ No URLs to process.")
         sys.exit(0)
 
+    # ✅ RESUME SUPPORT: Load existing URLs so we don't re-scrape or overwrite them
+    existing_links = set()
+    if os.path.exists(OUT_FILE):
+        with open(OUT_FILE, "r", encoding="utf-8") as f:
+            existing_links = {line.strip() for line in f if line.strip()}
+        if existing_links:
+            print(f"✅ Resume mode: {len(existing_links)} existing URLs loaded from {OUT_FILE}")
+
     proxies = []
     if USE_PROXY:
         proxies = read_proxies(PROXIES_FILE)
@@ -939,6 +951,17 @@ def main():
         print(f"✅ Persistent browser: READY (will launch on first use)")
 
     all_links = set()
+    saved_count = [0]  # mutable counter for nested function
+
+    def save_links_immediately(new_found_links):
+        """Langsung tulis URL baru ke file begitu ditemukan."""
+        for link in new_found_links:
+            clean = strip_amp(link)
+            if clean not in existing_links and clean not in all_links:
+                all_links.add(clean)
+                with open(OUT_FILE, "a", encoding="utf-8") as f:
+                    f.write(clean + "\n")
+                saved_count[0] += 1
 
     try:
         # When using playwright mode, run sequentially (one browser)
@@ -947,10 +970,12 @@ def main():
             shuffled = list(urls)
             random.shuffle(shuffled)
             for i, u in enumerate(shuffled):
-                all_links |= (process_one_url(u, None, auth, browser_mgr) or set())
+                result = process_one_url(u, None, auth, browser_mgr) or set()
+                save_links_immediately(result)
+                print(f"  💾 Total tersimpan: {len(existing_links) + len(all_links)} URL")
                 # Jitter between search URLs to avoid burst-rate detection
                 if i < len(shuffled) - 1:
-                    delay = random.uniform(8, 20)
+                    delay = random.uniform(3, 8)
                     print(f"  ⏸  Waiting {delay:.1f}s before next URL...")
                     time.sleep(delay)
         else:
@@ -966,28 +991,22 @@ def main():
                         u = futures[fut]
                         try:
                             res = fut.result() or set()
-                            all_links |= res
+                            save_links_immediately(res)
                         except Exception as e:
                             print(f"[{u}] ❌ Failed: {e}")
             else:
                 for u in urls:
                     proxy = random.choice(proxies) if proxies else None
-                    all_links |= (process_one_url(u, proxy, auth, browser_mgr) or set())
+                    result = process_one_url(u, proxy, auth, browser_mgr) or set()
+                    save_links_immediately(result)
     finally:
         # Always close browser
         if browser_mgr:
             browser_mgr.close()
             print(f"✅ Browser closed")
 
-    # Strip AMP from all collected links
-    all_links = {strip_amp(link) for link in all_links}
-
-    # Write results
-    with open(OUT_FILE, "w", encoding="utf-8") as f:
-        for link in sorted(all_links):
-            f.write(link + "\n")
-
-    print(f"\n✅ Links saved to {OUT_FILE} (unique: {len(all_links)})")
+    total_links = len(existing_links) + len(all_links)
+    print(f"\n✅ Selesai! (+{saved_count[0]} baru | total unique: {total_links})")
 
     if RUN_BATCH:
         try:
@@ -999,6 +1018,72 @@ def main():
         except FileNotFoundError:
             print("⚠️  scrape-onm-list.bat not found")
 
+    # Panggil fungsi scraping berita setelah selesai
+    scrape_article_contents(list(all_links))
+
+
+def scrape_article_contents(links):
+    print(f"\n📡 Mulai mengekstrak isi teks berita dari {len(links)} link...")
+    target_domains = ["kompas.com", "detik.com", "cnnindonesia.com", "tempo.co", "tribunnews.com", "okezone.com"]
+    
+    with open("hasil_berita.txt", "w", encoding="utf-8") as f:
+        f.write("=== HASIL EKSTRAKSI BERITA ===\n\n")
+        
+    for link in links:
+        if not any(domain in link.lower() for domain in target_domains):
+            continue
+            
+        print(f"  Mengekstrak: {link}")
+        try:
+            html = fetch_page_curl_cffi(link, None, 0, None)
+            if not html:
+                continue
+            soup = BeautifulSoup(html, "html.parser")
+            
+            title = ""
+            content = ""
+            
+            if "kompas.com" in link:
+                t = soup.select_one(".read__title")
+                title = t.text.strip() if t else soup.title.text
+                ps = soup.select(".read__content p")
+                content = "\n".join(p.text.strip() for p in ps)
+            elif "detik.com" in link:
+                t = soup.select_one(".detail__title")
+                title = t.text.strip() if t else soup.title.text
+                ps = soup.select(".detail__body-text p")
+                content = "\n".join(p.text.strip() for p in ps)
+            elif "cnnindonesia.com" in link:
+                t = soup.select_one(".title")
+                title = t.text.strip() if t else soup.title.text
+                ps = soup.select(".detail-text p")
+                content = "\n".join(p.text.strip() for p in ps)
+            elif "tempo.co" in link:
+                t = soup.select_one("h1.title")
+                title = t.text.strip() if t else soup.title.text
+                ps = soup.select("#isi p")
+                content = "\n".join(p.text.strip() for p in ps)
+            elif "tribunnews.com" in link:
+                t = soup.select_one("#arttitle")
+                title = t.text.strip() if t else soup.title.text
+                ps = soup.select(".txt-article p")
+                content = "\n".join(p.text.strip() for p in ps)
+            elif "okezone.com" in link:
+                t = soup.select_one(".title")
+                title = t.text.strip() if t else soup.title.text
+                ps = soup.select(".read p")
+                content = "\n".join(p.text.strip() for p in ps)
+            
+            with open("hasil_berita.txt", "a", encoding="utf-8") as f:
+                f.write(f"URL: {link}\n")
+                f.write(f"Judul: {title}\n")
+                f.write(f"Isi:\n{content}\n")
+                f.write("-" * 80 + "\n\n")
+                
+            print(f"  ✅ Sukses: {title[:50]}...")
+            time.sleep(2)
+        except Exception as e:
+            print(f"  ❌ Gagal: {e}")
 
 if __name__ == "__main__":
     main()
