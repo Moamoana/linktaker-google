@@ -1,6 +1,0 @@
-https://www.google.com/search?q=berita+hari+ini+site:kompas.com
-https://www.google.com/search?q=berita+terkini+site:detik.com
-https://www.google.com/search?q=berita+indonesia+site:cnnindonesia.com
-https://www.google.com/search?q=kabar+terbaru+site:tempo.co
-https://www.google.com/search?q=berita+nasional+site:tribunnews.com
-https://www.google.com/search?q=berita+populer+site:okezone.com

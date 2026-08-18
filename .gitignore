@@ -12,17 +12,8 @@ env/
 venv/
 ENV/
 
-# Output and temp files
-output*.txt
-hasil_*.txt
-*test.html
-*test*.py
-check_*.py
-inspect_*.py
-
-# But keep the URL input lists and proxies
-!url*.txt
-!proxies.txt
+# All txt files
+*.txt
 
 # Directories
 bing_with_site/
