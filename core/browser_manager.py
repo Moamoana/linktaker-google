@@ -93,8 +93,9 @@ class BrowserManager:
         proxy: Optional proxy address forwarded to the browser launch args.
     """
 
-    def __init__(self, proxy: Optional[str] = None) -> None:
+    def __init__(self, proxy: Optional[str] = None, force_proxy: bool = False) -> None:
         self.proxy = proxy
+        self._force_proxy = force_proxy
         self._playwright = None
         self._browser = None
         self._context: Optional[BrowserContext] = None
@@ -129,7 +130,7 @@ class BrowserManager:
                 "--force-fieldtrial-params=SecureDns.Enable:Mode/secure/Templates/https%3A%2F%2Fcloudflare-dns.com%2Fdns-query"
             ])
             
-        if self.proxy and USE_PROXY:
+        if self.proxy and (USE_PROXY or self._force_proxy):
             launch_kwargs["proxy"] = {"server": self.proxy}
 
         self._browser = self._playwright.chromium.launch(**launch_kwargs)

@@ -32,7 +32,6 @@ from config import (
     URLS_FILE_GOOGLE,
     URLS_FILE_YAHOO,
     URLS_FILE_DDG,
-    USE_PROXY,
 )
 from core.browser_manager import (
     BrowserManager,
@@ -88,13 +87,14 @@ def _build_engine(name: str, browser_mgr: BrowserManager | None):
 # Runner
 # ---------------------------------------------------------------------------
 
-def run(engine_name: str, proxies: list[str], auth: dict | None) -> None:
+def run(engine_name: str, proxies: list[str], auth: dict | None, force_proxy: bool = False) -> None:
     """Execute a single engine's collection run.
 
     Args:
         engine_name: One of ``"google"``, ``"bing"``, ``"yahoo"``, or ``"duckduckgo"``.
         proxies:     List of proxy strings (may be empty).
         auth:        Basic-auth credentials dict, or ``None``.
+        force_proxy: When ``True``, use proxy even if ``USE_PROXY`` is ``False``.
     """
     urls_file, out_file = _ENGINE_MAP[engine_name]
 
@@ -110,11 +110,13 @@ def run(engine_name: str, proxies: list[str], auth: dict | None) -> None:
 
     browser_mgr: BrowserManager | None = None
     if FETCH_MODE in ("auto", "playwright") and _PLAYWRIGHT_AVAILABLE:
-        proxy = random.choice(proxies) if proxies else None
-        browser_mgr = BrowserManager(proxy=proxy)
+        # Only use proxy for engines that need it (e.g. DuckDuckGo for Kominfo bypass)
+        proxy = random.choice(proxies) if (proxies and force_proxy) else None
+        browser_mgr = BrowserManager(proxy=proxy, force_proxy=force_proxy)
+        proxy_status = f"proxy={proxy[:30]}..." if proxy else "no proxy"
         logger.info(
-            "Browser ready  |  stealth=%s  fingerprint=%s",
-            _STEALTH_AVAILABLE, _BROWSERFORGE_AVAILABLE,
+            "Browser ready  |  stealth=%s  fingerprint=%s  %s",
+            _STEALTH_AVAILABLE, _BROWSERFORGE_AVAILABLE, proxy_status,
         )
 
     engine = _build_engine(engine_name, browser_mgr)
@@ -159,13 +161,16 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
 
-    proxies = read_proxies(PROXIES_FILE) if USE_PROXY else []
+    # Always load proxies — they will only be used for DuckDuckGo (Kominfo bypass)
+    proxies = read_proxies(PROXIES_FILE)
     auth = read_auth(AUTH_FILE)
 
     targets = ["google", "bing", "yahoo", "duckduckgo"] if args.engine == "all" else [args.engine]
 
     for engine_name in targets:
-        run(engine_name, proxies, auth)
+        # Only DuckDuckGo needs proxy (blocked by Indonesian ISP/Kominfo)
+        needs_proxy = (engine_name == "duckduckgo")
+        run(engine_name, proxies, auth, force_proxy=needs_proxy)
 
 
 if __name__ == "__main__":

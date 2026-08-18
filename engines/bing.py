@@ -35,6 +35,10 @@ logger = logging.getLogger(__name__)
 # Bing-specific constants
 # ---------------------------------------------------------------------------
 
+#: Bing needs longer delays than Google to avoid IP bans.
+_BING_DELAY_MIN: float = 3.0
+_BING_DELAY_MAX: float = 6.0
+
 #: CSS selectors for organic Bing result links (ordered by specificity).
 _RESULT_SELECTORS: tuple[str, ...] = (
     "li.b_algo h2 a[href]",
@@ -64,6 +68,15 @@ _INDONESIAN_NEWS_DOMAINS: frozenset[str] = frozenset({
     "sindonews.com", "merdeka.com", "antaranews.com", "viva.co.id",
     "suara.com", "kumparan.com", "bisnis.com", "jpnn.com",
 })
+
+#: Error patterns that indicate Bing has blocked our IP.
+_IP_BAN_ERRORS: tuple[str, ...] = (
+    "ERR_CONNECTION_CLOSED",
+    "ERR_CONNECTION_RESET",
+    "ERR_CONNECTION_REFUSED",
+    "ERR_CONNECTION_TIMED_OUT",
+    "ERR_EMPTY_RESPONSE",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +122,12 @@ def _decode_bing_redirect(href: str) -> str:
         pass
 
     return href
+
+
+def _is_ip_ban_error(error: Exception) -> bool:
+    """Check if the error indicates Bing IP ban."""
+    error_str = str(error)
+    return any(pattern in error_str for pattern in _IP_BAN_ERRORS)
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +222,22 @@ class BingEngine(BaseEngine):
 
         try:
             page.set_default_timeout(0)
-            page.goto(start_url, wait_until="domcontentloaded")
+
+            # --- Initial page load with IP Ban detection ---
+            try:
+                page.goto(start_url, wait_until="domcontentloaded")
+            except Exception as e:
+                if _is_ip_ban_error(e):
+                    logger.error(
+                        "🛑 [BING IP BAN] Koneksi ditutup paksa oleh Bing. "
+                        "IP Anda sementara diblokir."
+                    )
+                    print(
+                        "  ⚠️  Bing memblokir IP Anda (IP Ban). "
+                        "Saran: restart modem atau tunggu 10-15 menit."
+                    )
+                    return links
+                raise
 
             if not self._browser.wait_for_page_ready(page, _WAIT_SELECTOR):  # type: ignore[union-attr]
                 logger.warning("Could not load Bing results for %s", start_url)
@@ -234,15 +268,31 @@ class BingEngine(BaseEngine):
                     logger.debug("No next-page button — end of Bing results")
                     break
 
+                # --- Click next with IP Ban detection ---
                 print("  Clicking next...")
-                next_btn.click()
-                page.wait_for_load_state("domcontentloaded")
+                try:
+                    next_btn.click()
+                    page.wait_for_load_state("domcontentloaded")
 
-                if not self._browser.wait_for_page_ready(page, _WAIT_SELECTOR):  # type: ignore[union-attr]
-                    logger.warning("Next page failed to load — stopping")
-                    break
+                    if not self._browser.wait_for_page_ready(page, _WAIT_SELECTOR):  # type: ignore[union-attr]
+                        logger.warning("Next page failed to load — stopping")
+                        break
+                except Exception as e:
+                    if _is_ip_ban_error(e):
+                        logger.warning(
+                            "🛑 [BING IP BAN] Bing memutus koneksi di halaman %d. "
+                            "Menyimpan %d URL yang sudah didapat.",
+                            page_idx + 1, len(links),
+                        )
+                        print(
+                            f"  ⚠️  Bing memblokir IP di halaman {page_idx + 1}. "
+                            f"Menyimpan {len(links)} URL yang sudah didapat."
+                        )
+                        break
+                    raise
 
-                time.sleep(random.uniform(PAGE_DELAY_MIN, PAGE_DELAY_MAX))
+                # Use Bing-specific longer delay
+                time.sleep(random.uniform(_BING_DELAY_MIN, _BING_DELAY_MAX))
 
         except Exception:
             logger.exception("Playwright pagination error for %s", start_url)
@@ -289,6 +339,6 @@ class BingEngine(BaseEngine):
                 if consecutive_empty >= CONSECUTIVE_EMPTY_PAGES:
                     break
 
-            time.sleep(random.uniform(PAGE_DELAY_MIN, PAGE_DELAY_MAX))
+            time.sleep(random.uniform(_BING_DELAY_MIN, _BING_DELAY_MAX))
 
         return links

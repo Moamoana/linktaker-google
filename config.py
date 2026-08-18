@@ -35,7 +35,7 @@ AUTH_FILE:        str = "auth.json"
 # Scraping behavior
 # ---------------------------------------------------------------------------
 
-MAX_PAGES_PER_SEARCH:    int   = 100
+MAX_PAGES_PER_SEARCH:    int   = 2
 CONSECUTIVE_EMPTY_PAGES: int   = 5
 REQUEST_TIMEOUT:         int   = 10      # seconds per HTTP request
 PARALLEL_WORKERS:        int   = 5
@@ -55,10 +55,10 @@ USE_SECURE_DNS:   bool = True
 # Timing  (fast mode — expects occasional manual CAPTCHA resolution)
 # ---------------------------------------------------------------------------
 
-PAGE_DELAY_MIN:    float = 0.5   # seconds between successive result pages
-PAGE_DELAY_MAX:    float = 1.5
-KEYWORD_DELAY_MIN: float = 1.5   # seconds between distinct search URLs
-KEYWORD_DELAY_MAX: float = 3.0
+PAGE_DELAY_MIN:    float = 2.0   # seconds between successive result pages
+PAGE_DELAY_MAX:    float = 4.0
+KEYWORD_DELAY_MIN: float = 3.0   # seconds between distinct search URLs
+KEYWORD_DELAY_MAX: float = 6.0
 
 
 # ---------------------------------------------------------------------------

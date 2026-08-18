@@ -5,6 +5,9 @@ Navigates DuckDuckGo search results using Playwright and returns
 clean article URLs.  Accepts either a plain-text query or a full
 ``https://duckduckgo.com/…`` URL.  DuckDuckGo uses a "More Results"
 button rather than traditional pagination.
+
+NOTE: DuckDuckGo is blocked by Indonesian ISPs (Kominfo).
+      This engine requires USE_PROXY=True or a VPN connection.
 """
 
 from __future__ import annotations
@@ -12,7 +15,7 @@ from __future__ import annotations
 import logging
 import random
 import time
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 from config import MAX_PAGES_PER_SEARCH, PAGE_DELAY_MAX, PAGE_DELAY_MIN
 from core.browser_manager import BrowserManager
@@ -28,6 +31,25 @@ logger = logging.getLogger(__name__)
 
 _WAIT_SELECTOR = "body"
 _MORE_BTN = 'button#more-results, button[id="more-results"], a.result--more__btn'
+
+#: Specific CSS selectors for DDG organic results (tried first).
+_RESULT_SELECTORS: tuple[str, ...] = (
+    'article[data-testid="result"] a[data-testid="result-title-a"]',
+    "a.result__a",
+    "div.result__body a[href]",
+    "h2.result__title a[href]",
+    "ol.react-results--main a[href]",
+)
+
+#: Error patterns that indicate DDG is blocked or connection failed.
+_CONNECTION_ERRORS: tuple[str, ...] = (
+    "ERR_CONNECTION_TIMED_OUT",
+    "ERR_CONNECTION_RESET",
+    "ERR_CONNECTION_CLOSED",
+    "ERR_CONNECTION_REFUSED",
+    "ERR_EMPTY_RESPONSE",
+    "ERR_NAME_NOT_RESOLVED",
+)
 
 
 class DuckDuckGoEngine(BaseEngine):
@@ -66,6 +88,50 @@ class DuckDuckGoEngine(BaseEngine):
         return self._paginate_playwright(search_url)
 
     # ------------------------------------------------------------------
+    # Link extraction helpers
+    # ------------------------------------------------------------------
+
+    def _extract_links_specific(self, page) -> set[str]:
+        """Extract links using DDG-specific CSS selectors (precise)."""
+        links: set[str] = set()
+        try:
+            html = page.content()
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, "html.parser")
+
+            for selector in _RESULT_SELECTORS:
+                for tag in soup.select(selector):
+                    href = tag.get("href", "")
+                    if not href or not href.startswith("http"):
+                        continue
+                    parsed = urlparse(href)
+                    if any(d in parsed.netloc for d in ("duckduckgo.com", "duck.co")):
+                        continue
+                    if is_valid_url(href):
+                        links.add(strip_amp(href))
+        except Exception as exc:
+            logger.debug("[%s] Specific selector extraction error: %s", self.name, exc)
+        return links
+
+    def _extract_links_broad(self, page) -> set[str]:
+        """Extract links using broad JavaScript approach (fallback)."""
+        links: set[str] = set()
+        try:
+            hrefs: list[str] = page.evaluate("""() => {
+                return Array.from(document.querySelectorAll('a[href]'))
+                    .map(a => a.href)
+                    .filter(h => h.startsWith('http'));
+            }""")
+            for href in hrefs:
+                if "duckduckgo.com" in href or "duck.co" in href:
+                    continue
+                if is_valid_url(href):
+                    links.add(strip_amp(href))
+        except Exception as exc:
+            logger.debug("[%s] Broad link extraction error: %s", self.name, exc)
+        return links
+
+    # ------------------------------------------------------------------
     # Playwright pagination (infinite scroll + "More Results" button)
     # ------------------------------------------------------------------
 
@@ -78,31 +144,32 @@ class DuckDuckGoEngine(BaseEngine):
         consecutive_empty = 0
 
         try:
-            page.goto(start_url, wait_until="domcontentloaded", timeout=60_000)
+            # --- Initial page load with ISP block detection ---
+            try:
+                page.goto(start_url, wait_until="domcontentloaded", timeout=60_000)
+            except Exception as e:
+                error_str = str(e)
+                if any(p in error_str for p in _CONNECTION_ERRORS):
+                    logger.error(
+                        "🛑 [DDG BLOCKED] DuckDuckGo tidak bisa diakses. "
+                        "Kemungkinan diblokir oleh ISP/Kominfo Indonesia."
+                    )
+                    print(
+                        "  ⚠️  DuckDuckGo diblokir oleh provider internet Anda (Kominfo).\n"
+                        "  ⚠️  Solusi: Nyalakan VPN atau set USE_PROXY=True di config.py"
+                    )
+                    return links
+                raise
+
             page.wait_for_timeout(3_000)
 
             for page_num in range(1, MAX_PAGES_PER_SEARCH + 1):
                 time.sleep(random.uniform(PAGE_DELAY_MIN, PAGE_DELAY_MAX))
 
-                # -------------------------------------------------------
-                # Extract ALL <a href> from the page, then filter via
-                # is_valid_url.  DDG wraps results in various containers
-                # that change frequently, so a broad approach is safer.
-                # -------------------------------------------------------
-                page_links: set[str] = set()
-                try:
-                    hrefs: list[str] = page.evaluate("""() => {
-                        return Array.from(document.querySelectorAll('a[href]'))
-                            .map(a => a.href)
-                            .filter(h => h.startsWith('http'));
-                    }""")
-                    for href in hrefs:
-                        if "duckduckgo.com" in href or "duck.co" in href:
-                            continue
-                        if is_valid_url(href):
-                            page_links.add(strip_amp(href))
-                except Exception as exc:
-                    logger.debug("[%s] Link extraction error: %s", self.name, exc)
+                # Try specific selectors first, fallback to broad
+                page_links = self._extract_links_specific(page)
+                if not page_links:
+                    page_links = self._extract_links_broad(page)
 
                 new_links = page_links - links
                 links.update(new_links)
