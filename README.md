@@ -14,6 +14,7 @@
 - [Instalasi](#instalasi)
 - [Konfigurasi](#konfigurasi)
 - [Penggunaan](#penggunaan)
+- [Search Engine: Google & Bing](#search-engine-google--bing)
 - [File Input & Output](#file-input--output)
 - [Mode Fetching](#mode-fetching)
 - [Anti-Deteksi & Stealth](#anti-deteksi--stealth)
@@ -27,9 +28,10 @@
 
 ## Tentang Project
 
-**LinkTaker Google** adalah scraper Python yang dirancang untuk mengekstrak semua URL hasil pencarian dari Google Search secara otomatis. Tool ini mendukung:
+**LinkTaker Google** adalah scraper Python yang dirancang untuk mengekstrak semua URL hasil pencarian dari Google Search maupun Bing Search secara otomatis. Tool ini mendukung:
 
-- **Input simpel via keyword + tanggal** — cukup tulis kata kunci dan filter tanggal di `keywords.txt`, tidak perlu menyusun URL Google secara manual
+- **Input simpel: cukup keyword** — file txt hanya berisi kata kunci; engine, tanggal, sort, jumlah halaman, dan proxy diatur lewat argumen CLI
+- **Dua search engine** — Google (default) atau Bing lewat `--engine bing`, dengan alur crawl yang sama
 - **Paginasi otomatis** — menelusuri halaman 1 hingga N dari hasil pencarian
 - **Multi-mode fetching** — `curl_cffi`, `Playwright` (headless browser), atau kombinasi keduanya
 - **Anti-bot detection** — fingerprint browser realistis, stealth mode, dan Cloudflare bypass
@@ -45,7 +47,9 @@
 
 | Fitur | Deskripsi |
 |---|---|
-| **Keyword + Date Input** | Cukup isi `keywords.txt` (`keyword \| date_filter \| mode`) — script yang membangun URL Google-nya |
+| **Keyword Input (txt)** | Cukup isi file txt dengan **keyword saja** (satu per baris) — script yang membangun URL search engine-nya |
+| **Multi Engine** | Google (default) dan Bing — `--engine bing`, satu alur crawl untuk keduanya |
+| **CLI Flags** | `--engine`, `--input`, `--from`, `--until`, `--sort`, `--output`, `--max-pages`, `--proxy`, `--mode` |
 | **Multi-mode Fetch** | `curl` (cepat), `playwright` (akurat), `auto` (fallback otomatis) |
 | **Browser Fingerprinting** | Menggunakan `browserforge` untuk generate fingerprint browser yang realistis |
 | **Stealth Mode** | `playwright-stealth` menyembunyikan tanda-tanda bot/automation |
@@ -54,9 +58,11 @@
 | **Google News RSS** | Fallback RSS feed untuk pencarian berita (tanpa CAPTCHA) |
 | **AMP Stripping** | Membersihkan `amp.`, `/amp/`, dan query param AMP dari URL |
 | **Social Media Filter** | Otomatis mengecualikan 40+ platform media sosial |
-| **Proxy Rotation** | Dukungan rotasi proxy untuk menghindari rate limiting |
+| **Filter Link Internal** | Link internal search engine dan iklan (mis. `bing.com/aclick`) tidak ikut tersimpan |
+| **Bing Redirect Decode** | Membongkar pembungkus `bing.com/ck/a?...&u=a1<base64>` jadi URL aslinya |
+| **Proxy** | Proxy manual lewat `--proxy` (mendukung `user:password@host:port`), atau rotasi dari `proxies.txt` |
 | **Parallel Processing** | Multi-thread worker untuk mode `curl`/`auto` |
-| **Batch Processing** | Proses banyak keyword/URL pencarian sekaligus dari `keywords.txt` atau `url.txt` |
+| **Batch Processing** | Proses banyak keyword sekaligus dari satu file txt (atau `url.txt`) |
 | **Auto Retry** | Retry otomatis hingga 3x untuk halaman yang gagal |
 | **Modular Package** | Kode terpecah per tanggung jawab (`browser.py`, `fetchers.py`, `keywords.py`, dst.) di dalam `linktaker/` |
 
@@ -66,8 +72,8 @@
 
 ```
 ┌─────────────┐     ┌──────────────┐     ┌──────────────────┐
-│ keywords.txt│────▶│  linktaker/  │────▶│   output.txt     │
-│  / url.txt  │     │   (package)  │     │ (extracted links) │
+│  --input    │────▶│  linktaker/  │────▶│   --output       │
+│ (keyword)   │     │   (package)  │     │ (extracted links) │
 └─────────────┘     └──────┬───────┘     └──────────────────┘
                            │
               ┌────────────┼────────────┐
@@ -80,7 +86,7 @@
              ▼            ▼            ▼
         ┌─────────────────────────────────────┐
         │  BeautifulSoup HTML Parser          │
-        │  ├── Extract Google result links    │
+        │  ├── Extract Google / Bing links    │
         │  ├── Filter social media            │
         │  ├── Strip AMP artifacts            │
         │  └── Deduplicate URLs               │
@@ -98,17 +104,21 @@ Sejak refactor, `linktaker.py` (dulu 1 file ~1000 baris) sudah dipecah jadi pack
 | `deps.py` | Import dependency opsional (`cloudscraper`, `playwright`, `feedparser`, `browserforge`) + flag `*_AVAILABLE` | — |
 | `config.py` | Semua konstanta (path file, timeout, `FETCH_MODE`, daftar domain sosmed, dll) | — |
 | `url_utils.py` | Strip AMP, filter social media, validasi & parsing link hasil Google | `config` |
-| `browser.py` | `BrowserManager` — lifecycle browser Playwright, deteksi CAPTCHA, paginasi klik "Next" | `config`, `deps`, `url_utils` |
+| `bing.py` | URL pencarian Bing (tanggal & sort), paginasi `first=`, decode redirect `ck/a`, parsing link Bing | `config`, `url_utils` |
+| `engines.py` | Adapter `GOOGLE`/`BING` — semua yang berbeda antar engine (URL, selector hasil, tombol next, penanda CAPTCHA) | `bing`, `keywords`, `url_utils` |
+| `browser.py` | `BrowserManager` — lifecycle browser Playwright, deteksi CAPTCHA, paginasi (klik "Next" untuk Google, navigasi URL untuk Bing) | `config`, `deps`, `engines` |
 | `news_rss.py` | Decode/bangun/fetch Google News RSS | `config`, `deps`, `url_utils` |
-| `keywords.py` | Parsing `keywords.txt` + membangun URL Google dari keyword & filter tanggal | — |
+| `keywords.py` | Baca file keyword + bangun URL Google dari keyword, `--from`/`--until`, dan `--sort` | — |
 | `io_utils.py` | Baca `url.txt`, `proxies.txt`, `auth.json` | `config` |
-| `fetchers.py` | Fetch via `curl_cffi`/`cloudscraper`, orkestrasi per-URL (`process_one_url`) | `config`, `deps`, `browser`, `news_rss`, `url_utils` |
+| `fetchers.py` | Fetch via `curl_cffi`/`cloudscraper`, orkestrasi per-URL (`process_one_url`) | `config`, `deps`, `browser`, `engines`, `news_rss` |
 | `cli.py` | `main()` — merangkai semua modul di atas jadi alur end-to-end | Semua modul di atas |
+| `cli.py` (argparse) | Definisi semua flag CLI (`build_parser`, `parse_args`) | `config`, `keywords` |
 | `__main__.py` | Entry point untuk `python -m linktaker` | `cli` |
+| `linktaker.py` (root) | Entry point untuk `python linktaker.py` | `cli` |
 
 **Alur import**: `cli.py` ada di lapisan paling atas dan memanggil semua modul lain; modul-modul di bawahnya (`url_utils`, `keywords`, `io_utils`, dst.) tidak saling bergantung kecuali lewat `config`/`deps`, jadi aman diedit paralel di branch berbeda.
 
-> **Untuk kontributor:** kalau mau nambah search engine baru (mis. issue Bing/Yahoo), pola yang konsisten adalah bikin modul fetcher baru (mis. `bing_fetcher.py`) yang meniru bentuk `fetchers.py`, lalu panggil dari `cli.py` — tidak perlu menyentuh `browser.py` atau `url_utils.py` kecuali ada parsing HTML yang beda.
+> **Untuk kontributor:** kalau mau nambah search engine baru (mis. Yahoo/DuckDuckGo), ikuti pola Bing: bikin satu modul berisi URL builder + parser link engine tersebut (contoh `bing.py`), lalu daftarkan sebagai `Engine` baru di `engines.py`. `fetchers.py` dan `browser.py` tidak perlu disentuh — keduanya hanya membaca field dari objek `Engine`.
 
 ---
 
@@ -156,23 +166,25 @@ playwright install chromium
 
 ## Konfigurasi
 
-Semua konfigurasi dilakukan langsung di dalam file [`linktaker/config.py`](linktaker/config.py):
+Nilai default ada di [`linktaker/config.py`](linktaker/config.py). Sebagian besar bisa ditimpa lewat argumen CLI (lihat [Penggunaan](#penggunaan)) tanpa mengedit file:
 
 ### File Paths
 
 | Variable | Default | Deskripsi |
 |---|---|---|
-| `KEYWORDS_FILE` | `"keywords.txt"` | File berisi keyword + filter tanggal (satu per baris) — lebih simpel, tidak perlu menyusun URL Google secara manual |
-| `URLS_FILE` | `"url.txt"` | File berisi URL pencarian Google (satu per baris), digunakan sebagai fallback jika `keywords.txt` tidak ada |
-| `OUT_FILE` | `"output.txt"` | File output untuk menyimpan link hasil ekstraksi |
-| `PROXIES_FILE` | `"proxies.txt"` | File berisi daftar proxy |
+| `KEYWORDS_FILE` | `"keywords.txt"` | Default `--input` — file berisi keyword saja, satu per baris |
+| `URLS_FILE` | `"url.txt"` | URL pencarian Google siap pakai (satu per baris), fallback kalau file `--input` tidak ada |
+| `OUT_FILE` | `"output.txt"` | Default `--output` — file untuk menyimpan link hasil ekstraksi |
+| `PROXIES_FILE` | `"proxies.txt"` | Daftar proxy, dipakai hanya kalau `--proxy` tidak diberikan |
 | `AUTH_FILE` | `"auth.json"` | File kredensial autentikasi (opsional) |
 
 ### Pengaturan Scraping
 
 | Variable | Default | Deskripsi |
 |---|---|---|
-| `MAX_PAGES_PER_SEARCH` | `10` | Jumlah maksimum halaman hasil pencarian per URL |
+| `MAX_PAGES_PER_SEARCH` | `None` | Default `--max-pages`. `None` = ambil semua halaman |
+| `DEFAULT_SORT` | `"relevance"` | Default `--sort` (`relevance` atau `latest`) |
+| `DEFAULT_ENGINE` | `"google"` | Default `--engine` (`google` atau `bing`) |
 | `WAIT_SEC` | `20` | Timeout request dalam detik |
 | `PARALLEL_WORKERS` | `5` | Jumlah thread paralel (mode `curl`/`auto`) |
 | `CONSECUTIVE_EMPTY_PAGES` | `2` | Stop setelah N halaman berturut-turut tanpa link baru |
@@ -184,62 +196,90 @@ Semua konfigurasi dilakukan langsung di dalam file [`linktaker/config.py`](linkt
 | Variable | Default | Deskripsi |
 |---|---|---|
 | `FETCH_MODE` | `"playwright"` | Mode fetching: `"curl"`, `"playwright"`, atau `"auto"` |
-| `USE_PROXY` | `False` | Aktifkan/nonaktifkan rotasi proxy |
 | `USE_CLOUDFLARE_BYPASS` | `True` | Aktifkan bypass Cloudflare via cloudscraper |
 | `USE_JAVASCRIPT_RENDERING` | `True` | Aktifkan rendering JavaScript |
 | `USE_GOOGLE_RSS` | `False` | Aktifkan Google News RSS sebagai fallback |
 | `RSS_DECODE_DELAY` | `2` | Delay (detik) antar decoding URL RSS |
-| `RUN_BATCH` | `True` | Jalankan `scrape-onm-list.bat` setelah selesai |
 
 ---
 
 ## Penggunaan
 
-### Langkah 1: Siapkan File Input
+### Langkah 1: Siapkan File Keyword
 
-Ada dua cara menyiapkan input pencarian. Jika keduanya ada, `keywords.txt` diprioritaskan.
-
-#### Opsi A — `keywords.txt` (Direkomendasikan, Paling Simpel)
-
-Cukup isi **keyword** dan **tanggal**, tidak perlu menyusun URL Google secara manual:
+Buat file txt yang **isinya keyword saja**, satu keyword per baris:
 
 ```text
-# keyword | date_filter | mode
-teknologi indonesia | w
-startup unicorn indonesia | d
-artificial intelligence news | 2024-01-01..2024-06-30 | web
+# keyword1.txt — baris diawali # diabaikan
+kpk
+pelni
+banjir jakarta
 ```
 
-- **keyword** (wajib): kata kunci pencarian.
-- **date_filter** (opsional):
-  - `h` / `d` / `w` / `m` / `y` — filter relatif: 1 jam / 1 hari / 1 minggu / 1 bulan / 1 tahun terakhir.
-  - `YYYY-MM-DD..YYYY-MM-DD` — rentang tanggal spesifik (bisa salah satu sisi dikosongkan, mis. `2024-01-01..` atau `..2024-06-30`).
-  - Kosongkan untuk semua waktu.
-- **mode** (opsional): `nws` (Google News, default) atau `web` (pencarian web biasa).
-
-Script otomatis membangun URL pencarian Google (`q`, `tbm`, `tbs`, atau operator `after:`/`before:`) dari baris ini.
-
-#### Opsi B — `url.txt` (Manual/Lanjutan)
-
-Buat file `url.txt` berisi URL pencarian Google yang sudah jadi:
-
-```text
-https://www.google.com/search?q=teknologi+indonesia&tbm=nws
-https://www.google.com/search?q=startup+unicorn+indonesia&tbs=qdr:w
-https://www.google.com/search?q=artificial+intelligence+news&tbm=nws&tbs=qdr:d
-```
-
-> **Tips:** Baris yang diawali `#` akan diabaikan (komentar), berlaku untuk kedua file.
+Tidak perlu menulis tanggal, mode, atau URL Google di dalam file — semuanya diatur lewat argumen CLI.
 
 ### Langkah 2: Jalankan Script
 
 ```bash
-python -m linktaker
+python linktaker.py --input keyword1.txt --from 2026-08-08 --until 2026-08-16 --sort latest --output hasil.txt --max-pages 2
+```
+
+Bentuk paling singkat (tanpa tanggal, langsung search apa adanya dari Google):
+
+```bash
+python linktaker.py --input keyword1.txt
+```
+
+Crawl dari Bing, bukan Google:
+
+```bash
+python linktaker.py --engine bing --input keyword1.txt --from 2026-08-08 --until 2026-08-16 --sort latest
+```
+
+Bisa juga dijalankan sebagai module:
+
+```bash
+python -m linktaker --input keyword1.txt
+```
+
+### Daftar Argumen
+
+| Argumen | Wajib | Default | Deskripsi |
+|---|---|---|---|
+| `--engine {google,bing}` | tidak | `google` | Search engine yang di-crawl |
+| `--input FILE` | tidak | `keywords.txt` | File txt berisi keyword, satu per baris |
+| `--from YYYY-MM-DD` | tidak | — | Ambil hasil mulai tanggal ini. Tanpa `--from`/`--until`, pencarian jalan tanpa filter tanggal |
+| `--until YYYY-MM-DD` | tidak | — | Ambil hasil sampai tanggal ini |
+| `--sort {latest,relevance}` | tidak | `relevance` | `latest` = urut terbaru, `relevance` = urutan default engine. Lihat [catatan Bing](#search-engine-google--bing) |
+| `--output FILE` | tidak | `output.txt` | File tujuan hasil link |
+| `--max-pages N` | tidak | semua | Maksimum halaman hasil yang di-crawl per keyword |
+| `--proxy URL` | tidak | tanpa proxy | Proxy manual, mis. `http://user:password@proxycrawler.dashboard.nolimit.id:2570` |
+| `--mode {nws,web}` | tidak | `nws` (google), `web` (bing) | `nws` = pencarian berita, `web` = pencarian web biasa |
+| `-h`, `--help` | — | — | Tampilkan bantuan |
+
+Contoh lengkap dengan proxy:
+
+```bash
+python linktaker.py --input keyword1.txt --from 2026-08-08 --until 2026-08-16 \
+    --sort latest --output hasil.txt --max-pages 2 \
+    --proxy http://user:password@proxycrawler.dashboard.nolimit.id:2570
+```
+
+Setiap keyword diubah jadi URL pencarian, contoh untuk `kpk` dengan perintah di atas:
+
+```text
+https://www.google.com/search?q=kpk&tbm=nws&tbs=cdr:1,cd_min:8/8/2026,cd_max:8/16/2026,sbd:1
+```
+
+Dengan `--engine bing`, URL yang dibangun:
+
+```text
+https://www.bing.com/search?q=kpk&filters=ex1%3A%22ez5_20673_20681%22
 ```
 
 ### Langkah 3: Lihat Hasil
 
-Semua link yang berhasil diekstrak tersimpan di `output.txt`:
+Semua link yang berhasil diekstrak tersimpan di file `--output` (default `output.txt`):
 
 ```text
 https://example.com/article/1
@@ -249,23 +289,59 @@ https://another-site.com/news/3
 
 ---
 
-## File Input & Output
+## Search Engine: Google & Bing
 
-### `keywords.txt` (Input — Direkomendasikan)
+Alur crawl-nya sama untuk kedua engine — yang berbeda hanya cara membangun URL, selector hasil, dan cara pindah halaman. Semuanya terkumpul di [`linktaker/engines.py`](linktaker/engines.py).
 
-File berisi keyword + filter tanggal, satu entri per baris (`keyword | date_filter | mode`):
+```bash
+python linktaker.py --engine bing --input keyword1.txt --from 2026-08-08 --until 2026-08-16 --sort latest
+```
+
+### Perbedaan Kemampuan
+
+| | Google | Bing (`--mode web`) | Bing (`--mode nws`) |
+|---|---|---|---|
+| Vertical | Google News (`tbm=nws`) / web | Bing Search | Bing News |
+| `--from` / `--until` | ✅ `tbs=cdr:1,cd_min,cd_max` | ✅ `filters=ex1:"ez5_<hari>_<hari>"` | ❌ diabaikan Bing |
+| `--sort latest` | ✅ `tbs=…,sbd:1` | ❌ tidak ada urutan by-date | ✅ `qft=sortbydate="1"` |
+| Paginasi | klik tombol **Next** (`#pnnext`) | navigasi URL `&first=11,21,…` | navigasi URL `&first=11,21,…` |
+| Default `--mode` | `nws` | `web` | — |
+
+Keterbatasan pada kolom Bing itu datang dari Bing sendiri, bukan dari tool ini: rentang tanggal kustom hanya berlaku di Bing Search, sedangkan urutan terbaru hanya ada di Bing News. Kalau Anda meminta kombinasi yang tidak didukung, script mencetak catatan di awal run, misalnya:
 
 ```text
-# Pencarian berita teknologi, 1 minggu terakhir
-teknologi indonesia | w
-
-# Pencarian web biasa, rentang tanggal spesifik
-python tutorial | 2024-01-01..2024-06-30 | web
+Note: Bing web search has no date ordering — use --mode nws for newest-first results.
 ```
+
+Hasil tetap diambil, hanya bagian yang tidak didukung itu saja yang diabaikan engine-nya.
+
+### Yang Dibuang dari Hasil Bing
+
+- Link internal Bing (`bing.com`, `bing.net`, `go.microsoft.com`, `login.live.com`)
+- Iklan — hanya `li.b_algo` (hasil organik) yang dibaca, `li.b_ad` dilewati
+- Redirect `https://www.bing.com/ck/a?…&u=a1<base64>` dibongkar dulu jadi URL asli; kalau gagal di-decode, link dibuang
+- Social media dan URL tidak valid — sama seperti Google
+
+---
+
+## File Input & Output
+
+### File Keyword (Input — via `--input`)
+
+Isinya **keyword saja**, satu per baris. Baris kosong dan baris diawali `#` diabaikan, keyword duplikat otomatis dibuang:
+
+```text
+# keyword1.txt
+teknologi indonesia
+startup unicorn indonesia
+python tutorial
+```
+
+> Format lama `keyword | date_filter | mode` masih bisa dibaca — bagian setelah `|` diabaikan, karena tanggal & mode sekarang datang dari CLI (`--from`, `--until`, `--sort`, `--mode`).
 
 ### `url.txt` (Input — Alternatif Manual)
 
-File berisi URL pencarian Google yang sudah jadi, satu URL per baris. Dipakai jika `keywords.txt` tidak ditemukan:
+File berisi URL pencarian Google yang sudah jadi, satu URL per baris. Dipakai hanya jika file `--input` tidak ditemukan:
 
 ```text
 # Pencarian berita teknologi
@@ -275,7 +351,7 @@ https://www.google.com/search?q=tech+news&tbm=nws
 https://www.google.com/search?q=python+tutorial
 ```
 
-### `output.txt` (Output)
+### File Output (via `--output`, default `output.txt`)
 
 File hasil berisi semua URL unik yang ditemukan, sudah dibersihkan dari AMP dan di-sort:
 
@@ -286,7 +362,7 @@ https://example.com/article-2
 
 ### `proxies.txt` (Opsional)
 
-Daftar proxy untuk rotasi:
+Daftar proxy untuk rotasi. Hanya dipakai kalau `--proxy` **tidak** diberikan:
 
 ```text
 http://proxy1.example.com:8080
@@ -373,17 +449,22 @@ LinkTaker menggunakan beberapa lapisan anti-deteksi:
 
 ## Proxy & Autentikasi
 
-### Mengaktifkan Proxy
+### Menggunakan Proxy
 
-1. Set `USE_PROXY = True` di konfigurasi
-2. Buat file `proxies.txt`:
+Cara paling langsung — lewat argumen `--proxy` (default: tanpa proxy):
+
+```bash
+python linktaker.py --input keyword1.txt --proxy http://user:password@proxycrawler.dashboard.nolimit.id:2570
+```
+
+Proxy dipakai baik oleh mode `curl` maupun `playwright`. Kredensial `user:password` otomatis dipisah dari host karena Chromium tidak menerima kredensial yang menempel di URL proxy.
+
+Alternatif — rotasi dari file. Kalau `--proxy` tidak diberikan dan `proxies.txt` ada, proxy diambil acak dari file itu:
 
 ```text
 http://user:pass@proxy1.com:8080
 socks5://proxy2.com:1080
 ```
-
-3. Proxy akan dirotasi secara acak untuk setiap URL
 
 ### Autentikasi
 
@@ -421,6 +502,7 @@ Set `USE_GOOGLE_RSS = True` di konfigurasi.
 - Hanya berfungsi untuk pencarian Google News (`tbm=nws`)
 - Jumlah hasil terbatas (biasanya ~20–100 item)
 - URL decode mungkin gagal untuk beberapa format baru
+- Rentang tanggal `--from`/`--until` belum didukung RSS (hanya filter relatif `qdr:*`)
 
 ### Dukungan Filter Waktu
 
@@ -462,9 +544,13 @@ Hal ini memastikan output hanya berisi link artikel/website yang relevan.
 
 ## Troubleshooting
 
-### `No input found`
+### `Input file not found`
 
-Baik `keywords.txt` maupun `url.txt` tidak ditemukan. Buat salah satunya di direktori yang sama dengan folder `linktaker/` — `keywords.txt` untuk input keyword + tanggal, atau `url.txt` untuk URL pencarian Google yang sudah jadi.
+File yang ditunjuk `--input` tidak ada (default `keywords.txt`). Buat file txt berisi keyword (satu per baris) di direktori yang sama dengan folder `linktaker/`, atau arahkan `--input` ke lokasi lain. Sebagai fallback, `url.txt` berisi URL pencarian Google yang sudah jadi juga masih dibaca.
+
+### `--from must be in YYYY-MM-DD format`
+
+Tanggal harus ditulis lengkap, mis. `--from 2026-08-08`. `--from` juga tidak boleh lebih besar dari `--until`.
 
 ### `playwright not installed`
 
@@ -491,6 +577,10 @@ pip install browserforge
 pip install feedparser
 ```
 
+### Bing: `One last step / solve the challenge`
+
+Bing menampilkan halaman challenge kalau lalu lintasnya dianggap mencurigakan. Script mendeteksinya dan menunggu Anda menyelesaikannya di jendela browser (timeout 120 detik), sama seperti CAPTCHA Google. Kalau sering muncul: kecilkan `--max-pages`, beri jeda antar run, atau pakai `--proxy`.
+
 ### CAPTCHA Detected
 
 Jika menggunakan mode `playwright`:
@@ -500,16 +590,17 @@ Jika menggunakan mode `playwright`:
 
 ### Tidak ada link yang diekstrak
 
-- Pastikan format `keywords.txt` benar (`keyword | date_filter | mode`) atau URL di `url.txt` valid
-- Coba ganti `FETCH_MODE` ke `"playwright"`
+- Pastikan file `--input` berisi keyword (satu per baris) atau URL di `url.txt` valid
+- Coba ganti `FETCH_MODE` ke `"playwright"` di `config.py`
+- Rentang `--from`/`--until` mungkin terlalu sempit — coba jalankan tanpa keduanya
 - Periksa koneksi internet
-- Coba kurangi `MAX_PAGES_PER_SEARCH`
+- Coba kecilkan `--max-pages`
 
 ### Rate Limiting / IP Blocked
 
-- Aktifkan proxy: set `USE_PROXY = True`
-- Tambahkan proxy ke `proxies.txt`
-- Tingkatkan delay antar request di konfigurasi
+- Pakai proxy: `--proxy http://user:password@host:2570`
+- Atau tambahkan beberapa proxy ke `proxies.txt` untuk dirotasi
+- Kecilkan `--max-pages` dan tingkatkan delay antar request di konfigurasi
 
 ---
 
@@ -517,22 +608,25 @@ Jika menggunakan mode `playwright`:
 
 ```
 linktaker-google/
-├── linktaker/            # Package utama — jalankan dengan `python -m linktaker`
+├── linktaker.py          # Entry point — `python linktaker.py --input keyword1.txt`
+├── linktaker/            # Package utama — bisa juga `python -m linktaker`
 │   ├── __init__.py
 │   ├── __main__.py       # Entry point
 │   ├── deps.py           # Optional-dependency imports (cloudscraper, playwright, dst.)
 │   ├── config.py         # Semua konstanta konfigurasi
 │   ├── browser.py        # BrowserManager (Playwright)
 │   ├── url_utils.py      # Strip AMP, filter social media, parsing link Google
+│   ├── bing.py           # URL Bing, paginasi first=, decode redirect, parsing link Bing
+│   ├── engines.py        # Adapter GOOGLE / BING untuk alur crawl bersama
 │   ├── news_rss.py       # Google News RSS decode/build/fetch
-│   ├── keywords.py       # Keyword + date -> URL builder (keywords.txt)
+│   ├── keywords.py       # Baca file keyword + builder URL Google (tanggal & sort)
 │   ├── io_utils.py       # Baca url.txt / proxies.txt / auth.json
 │   ├── fetchers.py       # curl_cffi, cloudscraper, orkestrasi fetch per URL
-│   └── cli.py            # main() — orkestrasi end-to-end
+│   └── cli.py            # argparse + main() — orkestrasi end-to-end
 ├── requirements.txt     # Daftar dependencies Python
-├── keywords.txt         # (Dibuat user) Input keyword + tanggal (direkomendasikan)
+├── keywords.txt         # (Dibuat user) Input keyword — default `--input`
 ├── url.txt              # (Dibuat user, opsional) Input URL pencarian manual
-├── output.txt           # (Auto-generated) Hasil link yang diekstrak
+├── output.txt           # (Auto-generated) Hasil link — default `--output`
 ├── proxies.txt          # (Opsional) Daftar proxy
 ├── auth.json            # (Opsional) Kredensial autentikasi
 └── README.md            # Dokumentasi ini

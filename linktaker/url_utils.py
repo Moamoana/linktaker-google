@@ -5,6 +5,9 @@ from bs4 import BeautifulSoup
 
 from .config import SOCIAL_MEDIA_DOMAINS
 
+# Netloc fragments that mean "this is the search engine itself, not a result".
+GOOGLE_BAD_NETLOC = ("google.com", "google.co.", "gstatic.com", "googleusercontent.com")
+
 
 def strip_amp(url: str) -> str:
     """Remove AMP artifacts from a URL."""
@@ -57,8 +60,12 @@ def is_social_media(url: str) -> bool:
         return False
 
 
-def is_valid_result_url(href: str) -> bool:
-    """Validate if URL is a real search result and not social media."""
+def is_valid_result_url(href: str, bad_netloc=GOOGLE_BAD_NETLOC) -> bool:
+    """Validate if URL is a real search result and not social media.
+
+    bad_netloc: host fragments belonging to the search engine itself, so its own
+    internal links and ad redirects never reach the output file.
+    """
     if not href:
         return False
 
@@ -79,8 +86,7 @@ def is_valid_result_url(href: str) -> bool:
     if not p.netloc:
         return False
 
-    bad = ("google.com", "google.co.", "gstatic.com", "googleusercontent.com")
-    if any(b in p.netloc for b in bad):
+    if any(b in p.netloc for b in bad_netloc):
         return False
 
     return True
