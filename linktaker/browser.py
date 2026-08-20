@@ -1,12 +1,33 @@
 import random
+from itertools import count
+from urllib.parse import unquote, urlparse, urlunparse
 
-from .config import USER_AGENTS, USE_PROXY, CAPTCHA_WAIT_TIMEOUT
+from .config import USER_AGENTS, CAPTCHA_WAIT_TIMEOUT
 from .deps import (
     PLAYWRIGHT_AVAILABLE, sync_playwright,
     STEALTH_AVAILABLE, stealth_sync,
     BROWSERFORGE_AVAILABLE, FingerprintGenerator,
 )
-from .url_utils import extract_google_links
+from .engines import GOOGLE
+
+
+def playwright_proxy(proxy_url: str) -> dict:
+    """Convert a proxy URL into Playwright's {server, username, password} form.
+
+    Playwright ignores credentials embedded in the server URL, so
+    http://user:pass@host:port is split into its parts.
+    """
+    parsed = urlparse(proxy_url if "://" in proxy_url else "http://" + proxy_url)
+    host = parsed.hostname or ""
+    if parsed.port:
+        host = f"{host}:{parsed.port}"
+
+    proxy = {"server": urlunparse((parsed.scheme or "http", host, "", "", "", ""))}
+    if parsed.username:
+        proxy["username"] = unquote(parsed.username)
+    if parsed.password:
+        proxy["password"] = unquote(parsed.password)
+    return proxy
 
 
 class BrowserManager:
@@ -75,13 +96,17 @@ class BrowserManager:
                 "--disable-infobars",
             ],
         }
-        if self._proxy and USE_PROXY:
-            launch_args["proxy"] = {"server": self._proxy}
+        proxy_settings = playwright_proxy(self._proxy) if self._proxy else None
+        if proxy_settings:
+            launch_args["proxy"] = proxy_settings
 
         self._browser = self._playwright.chromium.launch(**launch_args)
 
         # Build context options with browserforge fingerprint
         context_opts = {}
+        if proxy_settings:
+            # Chromium drops the launch-level credentials unless the context repeats them.
+            context_opts["proxy"] = proxy_settings
         self._fingerprint = self._generate_fingerprint()
         if self._fingerprint:
             fp = self._fingerprint
@@ -109,25 +134,26 @@ class BrowserManager:
         self._context = self._browser.new_context(**context_opts)
         return True
 
-    def _is_captcha_page(self, page):
-        """Check if the current page is a Google CAPTCHA / sorry page."""
+    def _is_captcha_page(self, page, engine=GOOGLE):
+        """Check if the current page is the engine's CAPTCHA / challenge page."""
         url = page.url
-        if '/sorry/' in url or 'google.com/sorry' in url:
+        if any(marker in url for marker in engine.captcha_url_markers):
             return True
-        captcha_selectors = [
-            '#captcha-form',
-            '#recaptcha',
-            'iframe[src*="recaptcha"]',
-            'form[action*="sorry"]',
-            '#g-recaptcha',
-            'div.g-recaptcha',
-        ]
-        for sel in captcha_selectors:
-            if page.query_selector(sel):
+
+        if page.query_selector(engine.captcha_selector):
+            return True
+
+        if engine.captcha_text_markers:
+            try:
+                text = page.inner_text("body")[:3000].lower()
+            except Exception:
+                text = ""
+            if any(marker in text for marker in engine.captcha_text_markers):
                 return True
+
         return False
 
-    def _wait_for_page_ready(self, page, initial_timeout_ms: int = 15000) -> bool:
+    def _wait_for_page_ready(self, page, engine=GOOGLE, initial_timeout_ms: int = 15000) -> bool:
         """
         Wait for either search results OR a CAPTCHA page to appear after navigation.
         If CAPTCHA, hand off to _wait_for_results so user can solve it.
@@ -135,29 +161,29 @@ class BrowserManager:
         """
         try:
             page.wait_for_selector(
-                "#search, #rso, div.g, #captcha-form, #recaptcha, form[action*='sorry'], #g-recaptcha",
+                f"{engine.results_selector}, {engine.captcha_selector}",
                 timeout=initial_timeout_ms,
             )
         except Exception:
-            # Selector never appeared — may still be a sorry page with different markup.
-            if self._is_captcha_page(page):
+            # Selector never appeared — may still be a challenge page with different markup.
+            if self._is_captcha_page(page, engine):
                 pass  # fall through to _wait_for_results CAPTCHA handler
             else:
                 return False
-        return self._wait_for_results(page)
+        return self._wait_for_results(page, engine)
 
-    def _wait_for_results(self, page):
+    def _wait_for_results(self, page, engine=GOOGLE):
         """Wait for search results. Distinguishes CAPTCHA from end-of-results."""
-        results = page.query_selector_all("div.g, div.SoaBEf, div.yuRUbf, div.MjjYud")
+        results = page.query_selector_all(engine.results_selector)
         if results:
             return True
 
         # No results found — check if it's actually a CAPTCHA
-        if self._is_captcha_page(page):
+        if self._is_captcha_page(page, engine):
             print(f"  CAPTCHA detected! Solve it in the browser window... (waiting up to {CAPTCHA_WAIT_TIMEOUT}s)")
             try:
                 page.wait_for_selector(
-                    "div.g, div.SoaBEf, div.yuRUbf, div.MjjYud",
+                    engine.results_selector,
                     timeout=CAPTCHA_WAIT_TIMEOUT * 1000
                 )
                 print(f"  Search results detected after CAPTCHA solve!")
@@ -170,7 +196,7 @@ class BrowserManager:
         print(f"  No results on this page (end of results)")
         return False
 
-    def fetch(self, url: str) -> str:
+    def fetch(self, url: str, engine=GOOGLE) -> str:
         """Fetch a single page using the persistent browser."""
         if not self._context:
             if not self.start():
@@ -183,7 +209,7 @@ class BrowserManager:
         try:
             page.set_default_timeout(0)
             page.goto(url, wait_until="domcontentloaded")
-            self._wait_for_page_ready(page)
+            self._wait_for_page_ready(page, engine)
             content = page.content()
             page.close()
             return content
@@ -195,11 +221,16 @@ class BrowserManager:
                 pass
             return None
 
-    def browse_and_paginate(self, start_url: str, max_pages: int, consecutive_empty_limit: int):
+    def browse_and_paginate(self, start_url: str, max_pages: int, consecutive_empty_limit: int,
+                            engine=GOOGLE):
         """
-        Open one tab, navigate to start_url, extract links, then click
-        the "Next" button (#pnnext) to paginate — no new tabs or page reloads.
+        Open one tab, navigate to start_url, extract links, then move on to the
+        next page — by clicking the engine's "Next" button (Google) or by
+        navigating to the next page URL (Bing). One tab is reused throughout.
         Returns all collected links.
+
+        max_pages: how many pages to visit; None keeps going until the engine
+        runs out of pages.
         """
         if not self._context:
             if not self.start():
@@ -215,15 +246,16 @@ class BrowserManager:
         try:
             page.set_default_timeout(0)
             page.goto(start_url, wait_until="domcontentloaded")
-            if not self._wait_for_page_ready(page):
+            if not self._wait_for_page_ready(page, engine):
                 print(f"  Could not load results for {start_url}")
                 return all_links
 
-            for page_idx in range(max_pages):
+            pages = count() if max_pages is None else range(max_pages)
+            for page_idx in pages:
 
                 # Extract links from current page
                 html = page.content()
-                page_links = extract_google_links(html)
+                page_links = engine.extract_links(html)
                 new = page_links - all_links
                 all_links |= page_links
 
@@ -237,16 +269,25 @@ class BrowserManager:
                         print(f"  Stopping: {consecutive_empty_limit} consecutive empty pages")
                         break
 
-                # Click "Next" button to go to next page
-                next_btn = page.query_selector("#pnnext")
-                if not next_btn:
-                    print(f"  No 'Next' button found — last page reached")
+                if max_pages is not None and page_idx + 1 >= max_pages:
                     break
 
-                print(f"  Clicking next...")
-                next_btn.click()
-                page.wait_for_load_state("domcontentloaded")
-                if not self._wait_for_page_ready(page):
+                # Move to the next page: click the engine's button, or open its URL.
+                if engine.next_selector:
+                    next_btn = page.query_selector(engine.next_selector)
+                    if not next_btn:
+                        print(f"  No 'Next' button found — last page reached")
+                        break
+
+                    print(f"  Clicking next...")
+                    next_btn.click()
+                    page.wait_for_load_state("domcontentloaded")
+                else:
+                    next_url = engine.build_paginated_url(start_url, page_idx + 1)
+                    print(f"  Opening page {page_idx+2}...")
+                    page.goto(next_url, wait_until="domcontentloaded")
+
+                if not self._wait_for_page_ready(page, engine):
                     print(f"  Next page failed to load — stopping pagination")
                     break
 

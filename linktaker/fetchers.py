@@ -1,3 +1,4 @@
+from itertools import count
 import random
 import time
 
@@ -5,13 +6,13 @@ import curl_cffi.requests as requests
 
 from .browser import BrowserManager
 from .config import (
-    USER_AGENTS, USE_PROXY, WAIT_SEC, RETRY_FAILED_PAGES,
+    USER_AGENTS, WAIT_SEC, RETRY_FAILED_PAGES,
     USE_CLOUDFLARE_BYPASS, FETCH_MODE, MAX_PAGES_PER_SEARCH,
     CONSECUTIVE_EMPTY_PAGES, USE_GOOGLE_RSS,
 )
 from .deps import CLOUDSCRAPER_AVAILABLE, cloudscraper, BROWSERFORGE_AVAILABLE, HeaderGenerator
+from .engines import GOOGLE
 from .news_rss import fetch_google_news_rss
-from .url_utils import build_paginated_url, extract_google_links
 
 
 def is_cloudflare_challenge(response_text: str) -> bool:
@@ -46,7 +47,7 @@ def fetch_page_curl_cffi(url: str, proxy: str = None, retry: int = 0, auth: dict
             pass
 
     proxies_dict = None
-    if proxy and USE_PROXY:
+    if proxy:
         proxies_dict = {"https": proxy, "http": proxy}
 
     auth_tuple = None
@@ -101,7 +102,7 @@ def fetch_page_cloudscraper(url: str, proxy: str = None, auth: dict = None) -> s
         }
 
         proxies_dict = None
-        if proxy and USE_PROXY:
+        if proxy:
             proxies_dict = {"https": proxy, "http": proxy}
 
         auth_tuple = None
@@ -126,7 +127,8 @@ def fetch_page_cloudscraper(url: str, proxy: str = None, auth: dict = None) -> s
         return None
 
 
-def fetch_page(url: str, proxy: str = None, auth: dict = None, browser_mgr: BrowserManager = None) -> str:
+def fetch_page(url: str, proxy: str = None, auth: dict = None,
+               browser_mgr: BrowserManager = None, engine=GOOGLE) -> str:
     """
     Main fetch function with mode-based fallback chain.
     - "curl": curl_cffi only
@@ -135,7 +137,7 @@ def fetch_page(url: str, proxy: str = None, auth: dict = None, browser_mgr: Brow
     """
     if FETCH_MODE == "playwright":
         if browser_mgr:
-            return browser_mgr.fetch(url)
+            return browser_mgr.fetch(url, engine)
         print("  Playwright mode but no browser manager")
         return None
 
@@ -146,16 +148,22 @@ def fetch_page(url: str, proxy: str = None, auth: dict = None, browser_mgr: Brow
     return fetch_page_curl_cffi(url, proxy, auth=auth)
 
 
-def process_one_url(search_url: str, proxy: str = None, auth: dict = None, browser_mgr: BrowserManager = None):
-    """Process a single search URL across multiple pages."""
+def process_one_url(search_url: str, proxy: str = None, auth: dict = None,
+                    browser_mgr: BrowserManager = None, max_pages: int = MAX_PAGES_PER_SEARCH,
+                    engine=GOOGLE):
+    """Process a single search URL across multiple pages.
+
+    max_pages: number of result pages to crawl; None means every page.
+    engine: which search engine's URL/selector rules to use (see engines.py).
+    """
     links_all = set()
 
     print(f"\n[{search_url}] Starting... (mode: {FETCH_MODE})")
-    if proxy and USE_PROXY:
+    if proxy:
         print(f"  Using proxy: {proxy}")
 
-    # Try Google News RSS first (free, no CAPTCHA)
-    if USE_GOOGLE_RSS:
+    # Try Google News RSS first (free, no CAPTCHA) — Google only.
+    if USE_GOOGLE_RSS and engine.name == "google":
         rss_links = fetch_google_news_rss(search_url)
         if rss_links:
             links_all |= rss_links
@@ -163,31 +171,33 @@ def process_one_url(search_url: str, proxy: str = None, auth: dict = None, brows
 
     # Playwright mode: open one tab, click "Next" to paginate
     if FETCH_MODE == "playwright" and browser_mgr:
-        pw_links = browser_mgr.browse_and_paginate(search_url, MAX_PAGES_PER_SEARCH, CONSECUTIVE_EMPTY_PAGES)
+        pw_links = browser_mgr.browse_and_paginate(search_url, max_pages, CONSECUTIVE_EMPTY_PAGES, engine)
         links_all |= pw_links
         print(f"[{search_url}] Complete: {len(links_all)} total links")
         return links_all
 
     # curl / auto mode: fetch each page separately
     consecutive_empty = 0
-    for page_idx in range(MAX_PAGES_PER_SEARCH):
-        page_url = build_paginated_url(search_url, page_idx)
+    pages = count() if max_pages is None else range(max_pages)
+    for page_idx in pages:
+        page_url = engine.build_paginated_url(search_url, page_idx)
 
-        html = fetch_page(page_url, proxy, auth, browser_mgr)
+        html = fetch_page(page_url, proxy, auth, browser_mgr, engine)
         if html is None:
             print(f"[{search_url}] page {page_idx+1}: Failed to fetch (stopping)")
             break
 
-        page_links = extract_google_links(html)
+        page_links = engine.extract_links(html)
 
         # Auto mode: if curl_cffi got HTML but 0 links, fall back to Playwright
         if not page_links and FETCH_MODE == "auto" and browser_mgr:
             print(f"[{search_url}] page {page_idx+1}: No links from curl_cffi, switching to Playwright...")
             # Use browse_and_paginate for the rest — no point retrying curl
             pw_links = browser_mgr.browse_and_paginate(
-                build_paginated_url(search_url, page_idx),
-                MAX_PAGES_PER_SEARCH - page_idx,
-                CONSECUTIVE_EMPTY_PAGES
+                engine.build_paginated_url(search_url, page_idx),
+                None if max_pages is None else max_pages - page_idx,
+                CONSECUTIVE_EMPTY_PAGES,
+                engine,
             )
             links_all |= pw_links
             break

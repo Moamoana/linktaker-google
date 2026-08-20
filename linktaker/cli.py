@@ -1,60 +1,192 @@
-import random
-import subprocess
-import sys
+import argparse
 import os
+import random
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .browser import BrowserManager
 from .config import (
-    KEYWORDS_FILE, URLS_FILE, PROXIES_FILE, OUT_FILE, RUN_BATCH,
-    USE_PROXY, FETCH_MODE, USE_GOOGLE_RSS, RSS_DECODE_DELAY,
+    KEYWORDS_FILE, URLS_FILE, PROXIES_FILE, OUT_FILE,
+    MAX_PAGES_PER_SEARCH, DEFAULT_SORT, DEFAULT_ENGINE,
+    FETCH_MODE, USE_GOOGLE_RSS, RSS_DECODE_DELAY,
     USE_CLOUDFLARE_BYPASS, PARALLEL_WORKERS, SOCIAL_MEDIA_DOMAINS,
 )
 from .deps import CLOUDSCRAPER_AVAILABLE, STEALTH_AVAILABLE, BROWSERFORGE_AVAILABLE, PLAYWRIGHT_AVAILABLE
+from .engines import ENGINES, get_engine
 from .fetchers import process_one_url
 from .io_utils import read_urls, read_proxies, read_auth
-from .keywords import build_search_url, read_keywords
+from .keywords import parse_date, read_keywords
 from .url_utils import strip_amp
 
+EXAMPLE = """example:
+  python linktaker.py --input keyword1.txt --from 2026-08-08 --until 2026-08-16 --sort latest --output hasil.txt --max-pages 2
 
-def main():
-    """Main execution."""
-    urls = []
+  python linktaker.py --engine bing --input keyword1.txt --from 2026-08-08 --until 2026-08-16 --sort latest
+  python linktaker.py --input keyword1.txt
+  python linktaker.py --input keyword1.txt --proxy http://user:password@proxycrawler.dashboard.nolimit.id:2570
+"""
 
-    # Preferred: build search URLs from keyword + date, no need to hand-craft a Google URL.
-    if os.path.exists(KEYWORDS_FILE):
-        keyword_entries = read_keywords(KEYWORDS_FILE)
-        if keyword_entries:
-            urls = [build_search_url(kw, date_filter, mode) for kw, date_filter, mode in keyword_entries]
-            print(f"Built {len(urls)} search URL(s) from {KEYWORDS_FILE}")
+
+def positive_int(value: str) -> int:
+    """argparse type for --max-pages."""
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected a number, got '{value}'")
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"must be 1 or greater, got '{value}'")
+    return number
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog="linktaker.py",
+        description="Collect result links from Google or Bing search for a list of keywords.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=EXAMPLE,
+    )
+    parser.add_argument(
+        "--engine", choices=tuple(ENGINES), default=DEFAULT_ENGINE,
+        help=f"search engine to crawl (default: {DEFAULT_ENGINE})",
+    )
+    parser.add_argument(
+        "--input", metavar="FILE", default=KEYWORDS_FILE,
+        help=f"text file with one keyword per line (default: {KEYWORDS_FILE})",
+    )
+    parser.add_argument(
+        "--from", dest="date_from", metavar="YYYY-MM-DD",
+        help="only results published on/after this date (optional)",
+    )
+    parser.add_argument(
+        "--until", dest="date_until", metavar="YYYY-MM-DD",
+        help="only results published on/before this date (optional)",
+    )
+    parser.add_argument(
+        "--sort", choices=("latest", "relevance"), default=DEFAULT_SORT,
+        help=f"result ordering (default: {DEFAULT_SORT})",
+    )
+    parser.add_argument(
+        "--output", metavar="FILE", default=OUT_FILE,
+        help=f"file to write the collected links to (default: {OUT_FILE})",
+    )
+    parser.add_argument(
+        "--max-pages", "--max_pages", dest="max_pages", metavar="N", type=positive_int,
+        default=MAX_PAGES_PER_SEARCH,
+        help="max result pages to crawl per keyword (default: all pages)",
+    )
+    parser.add_argument(
+        "--proxy", metavar="URL", default=None,
+        help="proxy to route requests through, e.g. http://user:password@host:2570 (default: no proxy)",
+    )
+    parser.add_argument(
+        "--mode", choices=("nws", "web"), default=None,
+        help="news search (nws) or regular web search (web) "
+             "(default: nws for google, web for bing)",
+    )
+    return parser
+
+
+def parse_args(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    args.engine = get_engine(args.engine)
+    if args.mode is None:
+        args.mode = args.engine.default_mode
+
+    if args.date_from:
+        try:
+            args.date_from = parse_date(args.date_from, "--from")
+        except ValueError as e:
+            parser.error(str(e))
+
+    if args.date_until:
+        try:
+            args.date_until = parse_date(args.date_until, "--until")
+        except ValueError as e:
+            parser.error(str(e))
+
+    if args.date_from and args.date_until and args.date_from > args.date_until:
+        parser.error(f"--from ({args.date_from}) is later than --until ({args.date_until})")
+
+    return args
+
+
+def build_urls(args):
+    """Turn the keyword input file into a list of Google search URLs."""
+    if os.path.exists(args.input):
+        keywords = read_keywords(args.input)
+        if not keywords:
+            print(f"No keywords found in {args.input} — the file is empty or only has comments.")
+            sys.exit(1)
+
+        print(f"Loaded {len(keywords)} keyword(s) from {args.input}")
+        return [
+            args.engine.build_search_url(kw, args.date_from, args.date_until, args.sort, args.mode)
+            for kw in keywords
+        ]
 
     # Fallback: pre-built Google search URLs (backwards compatible).
-    if not urls and os.path.exists(URLS_FILE):
+    if os.path.exists(URLS_FILE):
         urls = read_urls(URLS_FILE)
         if urls:
-            print(f"Loaded {len(urls)} search URL(s) from {URLS_FILE}")
+            print(f"{args.input} not found — loaded {len(urls)} search URL(s) from {URLS_FILE}")
+            return urls
 
-    if not urls:
-        print(f"No input found. Create {KEYWORDS_FILE} (keyword | date | mode) or {URLS_FILE} (full Google search URLs).")
-        sys.exit(1)
+    print(f"Input file not found: {args.input}")
+    print("Create it with one keyword per line, or point --input at another file.")
+    sys.exit(1)
 
-    proxies = []
-    if USE_PROXY:
-        proxies = read_proxies(PROXIES_FILE)
 
+def resolve_proxies(args):
+    """--proxy wins; otherwise fall back to proxies.txt when it exists; otherwise no proxy."""
+    if args.proxy:
+        return [args.proxy]
+    if os.path.exists(PROXIES_FILE):
+        return read_proxies(PROXIES_FILE)
+    return []
+
+
+def describe_run(args, url_count):
+    """Print what this run is about to do."""
+    if args.date_from and args.date_until:
+        date_range = f"{args.date_from} .. {args.date_until}"
+    elif args.date_from:
+        date_range = f"from {args.date_from}"
+    elif args.date_until:
+        date_range = f"until {args.date_until}"
+    else:
+        date_range = "any date"
+
+    pages = "all" if args.max_pages is None else str(args.max_pages)
+    print(f"Processing {url_count} search(es) on {args.engine.name} "
+          f"— fetch mode: {FETCH_MODE}, search: {args.mode}")
+    print(f"Date: {date_range} | Sort: {args.sort} | Max pages: {pages} | Output: {args.output}")
+
+    has_dates = bool(args.date_from or args.date_until)
+    for note in args.engine.capability_notes(args.mode, args.sort, has_dates):
+        print(note)
+
+
+def main(argv=None):
+    """Main execution."""
+    args = parse_args(argv)
+
+    urls = build_urls(args)
+    proxies = resolve_proxies(args)
     auth = read_auth()
 
-    print(f"Processing {len(urls)} URL(s) — mode: {FETCH_MODE}")
+    describe_run(args, len(urls))
     print(f"Filtering social media URLs ({len(SOCIAL_MEDIA_DOMAINS)} domains excluded)")
 
-    if USE_GOOGLE_RSS:
+    if USE_GOOGLE_RSS and args.engine.name == "google":
         print(f"Google News RSS: ENABLED (decode delay: {RSS_DECODE_DELAY}s)")
 
     if proxies:
-        print(f"Proxy rotation enabled ({len(proxies)} proxy/proxies)")
+        print(f"Proxy enabled ({len(proxies)} proxy/proxies)")
     else:
-        print("No proxies loaded - proceeding without proxy rotation")
+        print("No proxy configured - proceeding without proxy")
 
     if USE_CLOUDFLARE_BYPASS:
         if CLOUDSCRAPER_AVAILABLE:
@@ -84,7 +216,8 @@ def main():
             shuffled = list(urls)
             random.shuffle(shuffled)
             for i, u in enumerate(shuffled):
-                all_links |= (process_one_url(u, None, auth, browser_mgr) or set())
+                all_links |= (process_one_url(u, None, auth, browser_mgr,
+                                              args.max_pages, args.engine) or set())
                 # Jitter between search URLs to avoid burst-rate detection
                 if i < len(shuffled) - 1:
                     delay = random.uniform(8, 20)
@@ -97,7 +230,8 @@ def main():
                     futures = {}
                     for u in urls:
                         proxy = random.choice(proxies) if proxies else None
-                        futures[ex.submit(process_one_url, u, proxy, auth, browser_mgr)] = u
+                        futures[ex.submit(process_one_url, u, proxy, auth, browser_mgr,
+                                          args.max_pages, args.engine)] = u
 
                     for fut in as_completed(futures):
                         u = futures[fut]
@@ -109,7 +243,8 @@ def main():
             else:
                 for u in urls:
                     proxy = random.choice(proxies) if proxies else None
-                    all_links |= (process_one_url(u, proxy, auth, browser_mgr) or set())
+                    all_links |= (process_one_url(u, proxy, auth, browser_mgr,
+                                                  args.max_pages, args.engine) or set())
     finally:
         # Always close browser
         if browser_mgr:
@@ -120,18 +255,11 @@ def main():
     all_links = {strip_amp(link) for link in all_links}
 
     # Write results
-    with open(OUT_FILE, "w", encoding="utf-8") as f:
+    out_dir = os.path.dirname(os.path.abspath(args.output))
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    with open(args.output, "w", encoding="utf-8") as f:
         for link in sorted(all_links):
             f.write(link + "\n")
 
-    print(f"\nLinks saved to {OUT_FILE} (unique: {len(all_links)})")
-
-    if RUN_BATCH:
-        try:
-            subprocess.run(["scrape-onm-list.bat"], check=True, shell=True)
-            print("scrape-onm-list.bat executed.")
-            print(f"\ncount of links: (unique: {len(all_links)})")
-        except subprocess.CalledProcessError as e:
-            print(f"Error executing scrape-onm-list.bat: {e}")
-        except FileNotFoundError:
-            print("scrape-onm-list.bat not found")
+    print(f"\nLinks saved to {args.output} (unique: {len(all_links)})")
