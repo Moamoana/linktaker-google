@@ -73,23 +73,37 @@ def build_yahoo_paginated_url(base_url: str, page_index: int) -> str:
 
 
 def decode_yahoo_redirect(url: str) -> str:
-    """Unwrap https://news.search.yahoo.com/.../RU=https%3a%2f%2f.../RK=2/... into the real target URL.
+    """Unwrap Yahoo redirect URLs and strip internal tracking parameters.
 
-    Returns the original URL untouched when it is not a Yahoo redirect.
+    Extracts the real target URL from RU=... and removes tracking junk
+    like ;_ylt=, ;_ylu=, ?fr=, ?fr2= which cause duplicates.
     """
-    if "RU=" not in url:
-        return url
+    if "RU=" in url:
+        try:
+            match = re.search(r'/RU=([^/]+)(?:/|$)', url)
+            if match:
+                url = unquote(match.group(1))
+        except Exception:
+            pass
 
+    # 1. Strip semicolon-based tracking params (e.g., ;_ylt=..., ;_ylu=...)
+    url = re.sub(r';_yl[tu]=[^?#]*', '', url)
+
+    # 2. Strip query-based tracking params (e.g., ?fr=..., ?fr2=...)
     try:
-        # Yahoo tracking URLs have path segments like /RU=encoded_url/RK=2
-        # Use (?:/|$) to match either a slash or the end of the string
-        match = re.search(r'/RU=([^/]+)(?:/|$)', url)
-        if match:
-            encoded_target = match.group(1)
-            return unquote(encoded_target)
+        p = urlparse(url)
+        qs = parse_qs(p.query, keep_blank_values=True)
+        if "fr" in qs:
+            qs.pop("fr")
+        if "fr2" in qs:
+            qs.pop("fr2")
+        
+        new_query = urlencode(qs, doseq=True)
+        url = urlunparse((p.scheme, p.netloc, p.path, p.params, new_query, p.fragment))
     except Exception:
         pass
-    return ""
+
+    return url
 
 
 def extract_yahoo_links(html_content: str) -> set:

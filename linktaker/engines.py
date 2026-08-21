@@ -71,7 +71,7 @@ BING = Engine(
 
 YAHOO = Engine(
     name="yahoo",
-    default_mode="web",
+    default_mode="nws",
     build_search_url=build_yahoo_search_url,
     build_paginated_url=build_yahoo_paginated_url,
     extract_links=extract_yahoo_links,
