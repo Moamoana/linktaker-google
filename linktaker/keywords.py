@@ -1,89 +1,101 @@
-"""Keyword input + Google search URL builder.
+"""Keyword + date input — the simple alternative to hand-crafting url.txt."""
 
-The input file holds one keyword per line — dates, sorting and paging all
-come from the command line, so the file stays as simple as possible.
-"""
-
-from datetime import date, datetime
 from urllib.parse import urlencode, quote_plus
 
-DATE_FORMAT = "%Y-%m-%d"
+# Relative Google time filters (same codes used by tbs=qdr:*)
+RELATIVE_DATE_CODES = {"h": "qdr:h", "d": "qdr:d", "w": "qdr:w", "m": "qdr:m", "y": "qdr:y"}
 
 
-def parse_date(value: str, flag: str) -> date:
-    """Parse a YYYY-MM-DD CLI date. Raises ValueError with a readable message."""
-    try:
-        return datetime.strptime(value.strip(), DATE_FORMAT).date()
-    except ValueError:
-        raise ValueError(f"{flag} must be in YYYY-MM-DD format (got '{value}')")
-
-
-def _google_date(d: date) -> str:
-    """Google's tbs date format — M/D/YYYY, no zero padding."""
-    return f"{d.month}/{d.day}/{d.year}"
-
-
-def build_tbs(date_from: date = None, date_until: date = None, sort: str = "relevance") -> str:
+def parse_date_filter(date_filter: str):
     """
-    Build the Google `tbs` parameter from a date range and a sort order.
+    Convert a date filter string into (tbs_value, query_suffix).
 
-    - custom date range -> cdr:1,cd_min:8/8/2026,cd_max:8/16/2026
-    - sort latest       -> sbd:1   (sort by date; relevance is Google's default)
+    Supported formats:
+      - "" / None                    -> no filter
+      - "h" / "d" / "w" / "m" / "y"  -> relative filter (past hour/day/week/month/year)
+      - "YYYY-MM-DD..YYYY-MM-DD"     -> custom date range (after:/before: search operators)
+      - "YYYY-MM-DD.."               -> only "after" date
+      - "..YYYY-MM-DD"               -> only "before" date
     """
+    date_filter = (date_filter or "").strip()
+    if not date_filter:
+        return None, ""
+
+    code = date_filter.lower()
+    if code in RELATIVE_DATE_CODES:
+        return RELATIVE_DATE_CODES[code], ""
+
+    if ".." in date_filter:
+        start, _, end = date_filter.partition("..")
+        start, end = start.strip(), end.strip()
+        parts = []
+        if start:
+            parts.append(f"after:{start}")
+        if end:
+            parts.append(f"before:{end}")
+        return None, (" " + " ".join(parts) if parts else "")
+
+    print(f"  Unrecognized date filter '{date_filter}', ignoring.")
+    return None, ""
+
+
+def build_search_url(keyword: str, date_from: str = "", date_until: str = "", sort: str = "", mode: str = "nws") -> str:
+    """Build a Google search URL from a keyword and optional filters (Issue #2)."""
+    
     parts = []
-    if date_from or date_until:
-        parts.append("cdr:1")
-        if date_from:
-            parts.append(f"cd_min:{_google_date(date_from)}")
-        if date_until:
-            parts.append(f"cd_max:{_google_date(date_until)}")
-    if sort == "latest":
-        parts.append("sbd:1")
-    return ",".join(parts)
+    if date_from:
+        parts.append(f"after:{date_from}")
+    if date_until:
+        parts.append(f"before:{date_until}")
+        
+    query_suffix = " " + " ".join(parts) if parts else ""
+    query = keyword.strip() + query_suffix
 
-
-def build_search_url(keyword: str, date_from: date = None, date_until: date = None,
-                     sort: str = "relevance", mode: str = "nws") -> str:
-    """Build a Google search URL for one keyword.
-
-    mode: "nws" for Google News results, "web" for regular web search.
-    """
-    params = {"q": keyword.strip()}
+    params = {"q": query}
+    
+    # Menangani Issue #3 (Tab Semua vs Berita)
     if mode == "nws":
         params["tbm"] = "nws"
-
-    tbs = build_tbs(date_from, date_until, sort)
-    if tbs:
-        params["tbs"] = tbs
+        
+    # Menangani --sort latest (hanya berlaku jika mode news)
+    if sort == "latest":
+        params["tbs"] = "sbd:1"
 
     return "https://www.google.com/search?" + urlencode(params, quote_via=quote_plus)
 
 
 def read_keywords(path):
     """
-    Read keywords from file — one keyword per line.
-    Blank lines and lines starting with `#` are ignored.
+    Read keyword search requests from file — the simple alternative to url.txt.
+    Each non-comment, non-empty line:
 
-        pelni
+        keyword | date_filter | mode
+
+    Only `keyword` is required. Examples:
+
         startup indonesia
-        ai regulation
+        ai regulation | w
+        breaking news jakarta | 2024-01-01..2024-06-30 | web
 
-    Legacy lines using the old `keyword | date | mode` format still work:
-    only the keyword part is used, the rest now comes from CLI flags.
+    Returns a list of (keyword, date_filter, mode) tuples.
     """
-    keywords = []
-    seen = set()
+    entries = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
 
-            # Legacy "keyword | date | mode" lines: keep the keyword only.
-            keyword = line.split("|")[0].strip()
-            if not keyword or keyword.lower() in seen:
+            parts = [p.strip() for p in line.split("|")]
+            keyword = parts[0]
+            if not keyword:
                 continue
 
-            seen.add(keyword.lower())
-            keywords.append(keyword)
-    return keywords
+            date_filter = parts[1] if len(parts) > 1 else ""
+            mode = parts[2].lower() if len(parts) > 2 and parts[2] else "nws"
+            if mode not in ("nws", "web"):
+                print(f"  Unknown mode '{mode}' for keyword '{keyword}', defaulting to 'nws'")
+                mode = "nws"
+
+            entries.append((keyword, date_filter, mode))
+    return entries
