@@ -5,9 +5,6 @@ from bs4 import BeautifulSoup
 
 from .config import SOCIAL_MEDIA_DOMAINS
 
-# Netloc fragments that mean "this is the search engine itself, not a result".
-GOOGLE_BAD_NETLOC = ("google.com", "google.co.", "gstatic.com", "googleusercontent.com")
-
 
 def strip_amp(url: str) -> str:
     """Remove AMP artifacts from a URL."""
@@ -60,12 +57,8 @@ def is_social_media(url: str) -> bool:
         return False
 
 
-def is_valid_result_url(href: str, bad_netloc=GOOGLE_BAD_NETLOC) -> bool:
-    """Validate if URL is a real search result and not social media.
-
-    bad_netloc: host fragments belonging to the search engine itself, so its own
-    internal links and ad redirects never reach the output file.
-    """
+def is_valid_result_url(href: str) -> bool:
+    """Validate if URL is a real search result and not social media."""
     if not href:
         return False
 
@@ -86,7 +79,36 @@ def is_valid_result_url(href: str, bad_netloc=GOOGLE_BAD_NETLOC) -> bool:
     if not p.netloc:
         return False
 
-    if any(b in p.netloc for b in bad_netloc):
+    bad = ("google.com", "google.co.", "gstatic.com", "googleusercontent.com")
+    if any(b in p.netloc for b in bad):
+        return False
+
+    # --- Extreme News Filter (Issue #3) ---
+    # Hanya mengambil murni artikel berita di tab "Semua" secara ekstrim.
+    path = p.path.strip("/")
+    if not path:  # Buang homepage (misal: karir.pelni.co.id)
+        return False
+        
+    path_lower = p.path.lower()
+    
+    # Kriteria Emas Artikel Berita:
+    # 1. Judul panjang (biasanya >3 tanda hubung di path URL)
+    is_long_slug = path.count("-") >= 3
+    
+    # 2. Path mengandung direktori khas portal berita
+    news_keywords = ["/berita", "/news", "/read", "/article", "/detail", "/2023", "/2024", "/2025", "/2026"]
+    has_news_keyword = any(kw in path_lower for kw in news_keywords)
+    
+    # 3. Negative Filter (Anti-Media): Tolak mentah-mentah jika ini adalah halaman Video, Foto, atau Podcast
+    media_keywords = ["video", "foto", "gallery", "galeri", "podcast"]
+    is_media_page = any(kw in path_lower for kw in media_keywords)
+    
+    # Jika terdeteksi sebagai halaman media, langsung buang!
+    if is_media_page:
+        return False
+    
+    # Jika tidak memiliki slug panjang DAN tidak memiliki kata kunci berita, BUANG!
+    if not (is_long_slug or has_news_keyword):
         return False
 
     return True
@@ -114,6 +136,8 @@ def extract_google_links(html_content: str) -> set:
             "div.yuRUbf a[href]",
             "div.MjjYud a[href]",
             "a[jsname='UWckNb']",
+            # Fallback universal untuk mengatasi perombakan kelas CSS Google (Issue 3)
+            "a[href]",
         ]
 
         for selector in selectors:
