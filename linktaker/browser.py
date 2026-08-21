@@ -39,6 +39,7 @@ class BrowserManager:
         self._context = None
         self._proxy = proxy
         self._fingerprint = None
+        self._is_headed = False
 
     def _generate_fingerprint(self):
         """Generate a realistic desktop-only browser fingerprint using browserforge."""
@@ -79,16 +80,17 @@ class BrowserManager:
         print(f"  Could not generate desktop fingerprint after {MAX_ATTEMPTS} attempts, using defaults")
         return None
 
-    def start(self):
+    def start(self, headed=False):
         """Launch browser with stealth and fingerprint."""
         if not PLAYWRIGHT_AVAILABLE:
             print("  Playwright not installed.")
             return False
 
         self._playwright = sync_playwright().start()
+        self._is_headed = headed
 
         launch_args = {
-            "headless": False,
+            "headless": not headed,
             "args": [
                 "--disable-blink-features=AutomationControlled",
                 "--no-first-run",
@@ -133,6 +135,23 @@ class BrowserManager:
 
         self._context = self._browser.new_context(**context_opts)
         return True
+
+    def _relaunch_headed_for_captcha(self, current_url: str, engine):
+        """Tear down headless browser, restart headed, and return a new page at the URL."""
+        print("\n  [Handoff] CAPTCHA detected! Relaunching in HEADED mode so you can solve it...")
+        # Save state if needed (not strictly required if we just restart at the same URL)
+        state = self._context.storage_state()
+        
+        self.close()
+        self.start(headed=True)
+        
+        page = self._context.new_page()
+        if STEALTH_AVAILABLE:
+            stealth_sync(page)
+        self._context.add_cookies(state.get("cookies", []))
+            
+        page.goto(current_url, wait_until="domcontentloaded")
+        return page
 
     def _is_captcha_page(self, page, engine=GOOGLE):
         """Check if the current page is the engine's CAPTCHA / challenge page."""
@@ -180,6 +199,13 @@ class BrowserManager:
 
         # No results found — check if it's actually a CAPTCHA
         if self._is_captcha_page(page, engine):
+            if not self._is_headed:
+                # We hit a CAPTCHA while invisible. Relaunch headed!
+                new_page = self._relaunch_headed_for_captcha(page.url, engine)
+                # Swap the page reference for the caller (this is tricky in Python pass-by-value, 
+                # but we return a special signal instead).
+                return "CAPTCHA_HANDOFF", new_page
+                
             print(f"  CAPTCHA detected! Solve it in the browser window... (waiting up to {CAPTCHA_WAIT_TIMEOUT}s)")
             try:
                 page.wait_for_selector(
@@ -209,7 +235,12 @@ class BrowserManager:
         try:
             page.set_default_timeout(0)
             page.goto(url, wait_until="domcontentloaded")
-            self._wait_for_page_ready(page, engine)
+            
+            res = self._wait_for_page_ready(page, engine)
+            if isinstance(res, tuple) and res[0] == "CAPTCHA_HANDOFF":
+                page = res[1]
+                res = self._wait_for_results(page, engine)
+                
             content = page.content()
             page.close()
             return content
@@ -246,7 +277,13 @@ class BrowserManager:
         try:
             page.set_default_timeout(0)
             page.goto(start_url, wait_until="domcontentloaded")
-            if not self._wait_for_page_ready(page, engine):
+            
+            res = self._wait_for_page_ready(page, engine)
+            if isinstance(res, tuple) and res[0] == "CAPTCHA_HANDOFF":
+                page = res[1]
+                res = self._wait_for_results(page, engine)
+                
+            if not res:
                 print(f"  Could not load results for {start_url}")
                 return all_links
 
@@ -287,7 +324,12 @@ class BrowserManager:
                     print(f"  Opening page {page_idx+2}...")
                     page.goto(next_url, wait_until="domcontentloaded")
 
-                if not self._wait_for_page_ready(page, engine):
+                res = self._wait_for_page_ready(page, engine)
+                if isinstance(res, tuple) and res[0] == "CAPTCHA_HANDOFF":
+                    page = res[1]
+                    res = self._wait_for_results(page, engine)
+                    
+                if not res:
                     print(f"  Next page failed to load — stopping pagination")
                     break
 

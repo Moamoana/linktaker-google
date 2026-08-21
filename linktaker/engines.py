@@ -12,6 +12,9 @@ from typing import Callable
 from .bing import (
     build_bing_paginated_url, build_bing_search_url, capability_notes, extract_bing_links,
 )
+from .yahoo import (
+    build_yahoo_paginated_url, build_yahoo_search_url, extract_yahoo_links,
+)
 from .keywords import build_search_url as build_google_search_url
 from .url_utils import build_paginated_url as build_google_paginated_url, extract_google_links
 
@@ -66,7 +69,19 @@ BING = Engine(
     captcha_text_markers=("solve the challenge", "one last step"),
 )
 
-ENGINES = {engine.name: engine for engine in (GOOGLE, BING)}
+YAHOO = Engine(
+    name="yahoo",
+    default_mode="web",
+    build_search_url=build_yahoo_search_url,
+    build_paginated_url=build_yahoo_paginated_url,
+    extract_links=extract_yahoo_links,
+    results_selector="div.NewsArticle, h4.s-title, div.compTitle",
+    captcha_selector="iframe[src*='recaptcha'], form#captcha-form, div.g-recaptcha, body.captcha, #captcha",
+    captcha_url_markers=("/sorry/", "captcha"),
+    next_selector="a.next, a.compPagination",
+)
+
+ENGINES = {engine.name: engine for engine in (GOOGLE, BING, YAHOO)}
 
 
 def get_engine(name: str) -> Engine:
