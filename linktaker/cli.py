@@ -28,10 +28,12 @@ def main():
     parser.add_argument("--from", dest="date_from", type=str, help="Start date (YYYY-MM-DD)")
     parser.add_argument("--until", dest="date_until", type=str, help="End date (YYYY-MM-DD)")
     parser.add_argument("--sort", choices=["latest", "relevance"], default="relevance", help="Sort method")
-    parser.add_argument("--tab", choices=["news", "all"], default="news", help="Google tab (Issue #3)")
+    parser.add_argument("--tab", choices=["news", "all"], default="all", help="Google tab (Issue #3)")
     parser.add_argument("--output", type=str, default="output.txt", help="Output file path")
     parser.add_argument("--max-pages", type=int, default=0, help="Max pages to crawl per keyword (0 = all)")
     parser.add_argument("--proxy", type=str, help="Manual proxy string")
+    
+    parser.add_argument("--headed", action="store_false", dest="headless", help="Run browser in headed mode from the start (default is headless)")
     
     args = parser.parse_args()
 
@@ -71,7 +73,7 @@ def main():
     browser_mgr = None
     if FETCH_MODE in ("auto", "playwright") and PLAYWRIGHT_AVAILABLE:
         proxy = random.choice(proxies) if proxies else None
-        browser_mgr = BrowserManager(proxy=proxy)
+        browser_mgr = BrowserManager(proxy=proxy, headless=args.headless)
         print(f"Persistent browser: READY (will launch on first use)")
 
     all_links = set()

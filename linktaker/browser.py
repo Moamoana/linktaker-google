@@ -1,4 +1,6 @@
 import random
+import os
+import time
 
 from .config import USER_AGENTS, USE_PROXY, CAPTCHA_WAIT_TIMEOUT
 from .deps import (
@@ -12,12 +14,14 @@ from .url_utils import extract_google_links
 class BrowserManager:
     """Persistent browser manager — one browser instance reused across all pages."""
 
-    def __init__(self, proxy=None):
+    def __init__(self, proxy=None, headless=True):
         self._playwright = None
         self._browser = None
         self._context = None
         self._proxy = proxy
         self._fingerprint = None
+        self._headless = headless
+        self._state_file = "state.json"
 
     def _generate_fingerprint(self):
         """Generate a realistic desktop-only browser fingerprint using browserforge."""
@@ -58,7 +62,7 @@ class BrowserManager:
         print(f"  Could not generate desktop fingerprint after {MAX_ATTEMPTS} attempts, using defaults")
         return None
 
-    def start(self):
+    def start(self, force_headed=False):
         """Launch browser with stealth and fingerprint."""
         if not PLAYWRIGHT_AVAILABLE:
             print("  Playwright not installed.")
@@ -66,8 +70,9 @@ class BrowserManager:
 
         self._playwright = sync_playwright().start()
 
+        is_headless = False if force_headed else self._headless
         launch_args = {
-            "headless": False,
+            "headless": is_headless,
             "args": [
                 "--disable-blink-features=AutomationControlled",
                 "--no-first-run",
@@ -106,8 +111,22 @@ class BrowserManager:
 
         context_opts["java_script_enabled"] = True
 
+        if os.path.exists(self._state_file):
+            try:
+                context_opts["storage_state"] = self._state_file
+            except Exception as e:
+                pass
+
         self._context = self._browser.new_context(**context_opts)
         return True
+
+    def _save_state(self):
+        """Save storage state for handoff."""
+        if self._context:
+            try:
+                self._context.storage_state(path=self._state_file)
+            except Exception as e:
+                print(f"  Warning: failed to save state: {e}")
 
     def _is_captcha_page(self, page):
         """Check if the current page is a Google CAPTCHA / sorry page."""
@@ -127,11 +146,11 @@ class BrowserManager:
                 return True
         return False
 
-    def _wait_for_page_ready(self, page, initial_timeout_ms: int = 15000) -> bool:
+    def _wait_for_page_ready(self, page, target_url=None, initial_timeout_ms: int = 15000):
         """
         Wait for either search results OR a CAPTCHA page to appear after navigation.
         If CAPTCHA, hand off to _wait_for_results so user can solve it.
-        Returns True if results are eventually visible, False otherwise.
+        Returns (success_bool, active_page_object)
         """
         try:
             page.wait_for_selector(
@@ -143,17 +162,27 @@ class BrowserManager:
             if self._is_captcha_page(page):
                 pass  # fall through to _wait_for_results CAPTCHA handler
             else:
-                return False
-        return self._wait_for_results(page)
+                return False, page
+        return self._wait_for_results(page, target_url)
 
-    def _wait_for_results(self, page):
+    def _wait_for_results(self, page, target_url=None):
         """Wait for search results. Distinguishes CAPTCHA from end-of-results."""
         results = page.query_selector_all("div.g, div.SoaBEf, div.yuRUbf, div.MjjYud")
         if results:
-            return True
+            return True, page
 
         # No results found — check if it's actually a CAPTCHA
         if self._is_captcha_page(page):
+            if self._headless:
+                print(f"  [HANDOFF] CAPTCHA terdeteksi di mode Headless! Beralih ke Headed...")
+                current_url = target_url or page.url
+                self._save_state()
+                self.close()
+                
+                self.start(force_headed=True)
+                page = self._context.new_page()
+                page.goto(current_url)
+
             print(f"  CAPTCHA detected! Solve it in the browser window... (waiting up to {CAPTCHA_WAIT_TIMEOUT}s)")
             try:
                 page.wait_for_selector(
@@ -161,14 +190,26 @@ class BrowserManager:
                     timeout=CAPTCHA_WAIT_TIMEOUT * 1000
                 )
                 print(f"  Search results detected after CAPTCHA solve!")
-                return True
-            except:
+                
+                if self._headless:
+                    print(f"  [HANDOFF] Menyimpan tiket CAPTCHA dan kembali ke Headless...")
+                    current_url = page.url
+                    self._save_state()
+                    self.close()
+                    
+                    self.start(force_headed=False)
+                    page = self._context.new_page()
+                    page.goto(current_url, wait_until="domcontentloaded")
+                    page.wait_for_selector("div.g, div.SoaBEf, div.yuRUbf, div.MjjYud", timeout=15000)
+
+                return True, page
+            except Exception as e:
                 print(f"  Timeout waiting for CAPTCHA solve")
-                return False
+                return False, page
 
         # Not a CAPTCHA — just no results (end of results or empty page)
         print(f"  No results on this page (end of results)")
-        return False
+        return False, page
 
     def fetch(self, url: str) -> str:
         """Fetch a single page using the persistent browser."""
@@ -183,7 +224,9 @@ class BrowserManager:
         try:
             page.set_default_timeout(0)
             page.goto(url, wait_until="domcontentloaded")
-            self._wait_for_page_ready(page)
+            success, page = self._wait_for_page_ready(page, target_url=url)
+            if not success:
+                return None
             content = page.content()
             page.close()
             return content
@@ -215,7 +258,8 @@ class BrowserManager:
         try:
             page.set_default_timeout(0)
             page.goto(start_url, wait_until="domcontentloaded")
-            if not self._wait_for_page_ready(page):
+            success, page = self._wait_for_page_ready(page, target_url=start_url)
+            if not success:
                 print(f"  Could not load results for {start_url}")
                 return all_links
 
@@ -244,9 +288,19 @@ class BrowserManager:
                     break
 
                 print(f"  Clicking next...")
+                
+                # Get URL before clicking in case we need it for handoff
+                try:
+                    next_url = next_btn.get_attribute("href")
+                    if next_url and not next_url.startswith("http"):
+                        next_url = "https://www.google.com" + next_url
+                except:
+                    next_url = None
+
                 next_btn.click()
                 page.wait_for_load_state("domcontentloaded")
-                if not self._wait_for_page_ready(page):
+                success, page = self._wait_for_page_ready(page, target_url=next_url)
+                if not success:
                     print(f"  Next page failed to load — stopping pagination")
                     break
 
