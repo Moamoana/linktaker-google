@@ -1,18 +1,16 @@
 # ---------------- Config ----------------
-# Defaults — most of these can be overridden from the command line.
 URLS_FILE = "url.txt"
-KEYWORDS_FILE = "keywords.txt"       # default for --input
-OUT_FILE = "output.txt"              # default for --output
-PROXIES_FILE = "proxies.txt"         # optional proxy list, used when --proxy is not given
+KEYWORDS_FILE = "keywords.txt"
+OUT_FILE = "output.txt"
+PROXIES_FILE = "proxies.txt"
 AUTH_FILE = "auth.json"
+RUN_BATCH = True
 
-MAX_PAGES_PER_SEARCH = None          # None = crawl every page (default for --max-pages)
-DEFAULT_SORT = "relevance"           # default for --sort ("relevance" or "latest")
-DEFAULT_ENGINE = "google"            # default for --engine ("google" or "bing")
-# --mode defaults per engine: google -> "nws" (Google News), bing -> "web" (Bing Search)
+MAX_PAGES_PER_SEARCH = 10
 WAIT_SEC = 20
 PARALLEL_WORKERS = 5
 CONSECUTIVE_EMPTY_PAGES = 2
+USE_PROXY = False
 RETRY_FAILED_PAGES = 3
 USE_CLOUDFLARE_BYPASS = True
 USE_JAVASCRIPT_RENDERING = True
