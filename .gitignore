@@ -3,5 +3,6 @@
 
 # ...except the dependency list, which belongs in the repo
 !requirements.txt
+!news_domains.txt
 
 __pycache__/
