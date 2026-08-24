@@ -52,6 +52,7 @@
 |---|---|
 | **Keyword Input (txt)** | Cukup isi file txt dengan **keyword saja** (satu per baris) — script yang membangun URL search engine-nya |
 | **Multi Engine** | Google (default), Bing, dan Yahoo — `--engine`, satu alur crawl untuk ketiganya |
+| **Gabungan Semua Engine** | `--engine all` menjalankan Google → Yahoo → Bing berurutan, hasilnya digabung ke satu file `--output` |
 | **Tab Semua / Berita** | `--mode web` (tab Semua, default), `--mode nws` (tab Berita), `--mode both` (gabungan) — tab Semua menangkap portal baru yang belum diakui Google sebagai news site |
 | **Filter Berita** | `--news-filter` menjaga output hanya berisi artikel berita: `smart` (buang host non-berita + URL non-artikel), `strict` (hanya penerbit di `news_domains.txt`), `off` |
 | **CLI Flags** | `--engine`, `--input`, `--from`, `--until`, `--sort`, `--output`, `--max-pages`, `--proxy`, `--mode`, `--news-filter`, `--news-domains` |
@@ -252,6 +253,12 @@ python linktaker.py --engine bing --input keyword1.txt --from 2026-08-08 --until
 python linktaker.py --engine yahoo --input keyword1.txt --from 2026-08-08 --until 2026-08-16
 ```
 
+Atau jalankan ketiganya sekaligus (Google → Yahoo → Bing) ke satu file output gabungan:
+
+```bash
+python linktaker.py --engine all --input keyword1.txt --from 2026-08-08 --until 2026-08-16 --sort latest --mode both --output hasil.txt
+```
+
 Bisa juga dijalankan sebagai module:
 
 ```bash
@@ -262,7 +269,7 @@ python -m linktaker --input keyword1.txt
 
 | Argumen | Wajib | Default | Deskripsi |
 |---|---|---|---|
-| `--engine {google,bing,yahoo}` | tidak | `google` | Search engine yang di-crawl |
+| `--engine {google,bing,yahoo,all}` | tidak | `google` | Search engine yang di-crawl. `all` menjalankan Google → Yahoo → Bing berurutan dan menggabung hasilnya ke satu `--output` |
 | `--input FILE` | tidak | `keywords.txt` | File txt berisi keyword, satu per baris |
 | `--from YYYY-MM-DD` | tidak | — | Ambil hasil mulai tanggal ini. Tanpa `--from`/`--until`, pencarian jalan tanpa filter tanggal |
 | `--until YYYY-MM-DD` | tidak | — | Ambil hasil sampai tanggal ini |
@@ -317,6 +324,14 @@ Alur crawl-nya sama untuk ketiga engine — yang berbeda hanya cara membangun UR
 ```bash
 python linktaker.py --engine bing --input keyword1.txt --from 2026-08-08 --until 2026-08-16 --sort latest
 ```
+
+### Menjalankan Semua Engine Sekaligus (`--engine all`)
+
+```bash
+python linktaker.py --engine all --input keyword1.txt --from 2026-08-08 --until 2026-08-16 --sort latest --mode both --output hasil.txt
+```
+
+Menjalankan Google, lalu Yahoo, lalu Bing secara berurutan dengan argumen yang sama (`--from`, `--until`, `--sort`, `--mode`, dll), dan menggabung semua link unik dari ketiganya ke satu file `--output`. Kalau `--mode` tidak diberikan, tiap engine tetap memakai default tab-nya masing-masing (`web` untuk Google/Bing, satu-satunya vertical untuk Yahoo). Berguna untuk sekali jalan mendapat cakupan maksimum tanpa menjalankan tiga perintah terpisah dan menggabung filenya secara manual.
 
 ### Perbedaan Kemampuan
 
