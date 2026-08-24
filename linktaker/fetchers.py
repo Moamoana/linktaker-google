@@ -12,7 +12,7 @@ from .config import (
 )
 from .deps import CLOUDSCRAPER_AVAILABLE, cloudscraper, BROWSERFORGE_AVAILABLE, HeaderGenerator
 from .engines import GOOGLE
-from .news_rss import fetch_google_news_rss
+from .engines.news_rss import fetch_google_news_rss
 
 
 def is_cloudflare_challenge(response_text: str) -> bool:
@@ -154,7 +154,7 @@ def process_one_url(search_url: str, proxy: str = None, auth: dict = None,
     """Process a single search URL across multiple pages.
 
     max_pages: number of result pages to crawl; None means every page.
-    engine: which search engine's URL/selector rules to use (see engines.py).
+    engine: which search engine's URL/selector rules to use (see engines/).
     """
     links_all = set()
 

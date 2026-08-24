@@ -5,11 +5,17 @@ KEYWORDS_FILE = "keywords.txt"       # default for --input
 OUT_FILE = "output.txt"              # default for --output
 PROXIES_FILE = "proxies.txt"         # optional proxy list, used when --proxy is not given
 AUTH_FILE = "auth.json"
+NEWS_DOMAINS_FILE = "news_domains.txt"  # publisher allowlist, used by --news-filter
 
 MAX_PAGES_PER_SEARCH = None          # None = crawl every page (default for --max-pages)
 DEFAULT_SORT = "relevance"           # default for --sort ("relevance" or "latest")
 DEFAULT_ENGINE = "google"            # default for --engine ("google" or "bing")
-# --mode defaults per engine: google -> "nws" (Google News), bing -> "web" (Bing Search)
+# Keep the output file to news stories. "smart" drops known non-news hosts and
+# non-article URLs but still lets an unknown portal through; "strict" admits
+# only NEWS_DOMAINS_FILE; "off" is the old behaviour. See news_filter.py.
+NEWS_FILTER = "smart"                # default for --news-filter
+# --mode default is "web" (the All tab) for every engine; "nws" searches the news
+# tab instead, "both" crawls the two and merges the links.
 WAIT_SEC = 20
 PARALLEL_WORKERS = 5
 CONSECUTIVE_EMPTY_PAGES = 2

@@ -169,6 +169,9 @@ class BrowserManager:
             if self._is_captcha_page(page, engine):
                 pass  # fall through to _wait_for_results CAPTCHA handler
             else:
+                # Say why, otherwise this looks like a silent failure.
+                print(f"  No results after {initial_timeout_ms // 1000}s and no challenge page "
+                      f"recognised — landed on: {page.url[:100]}")
                 return False
         return self._wait_for_results(page, engine)
 
