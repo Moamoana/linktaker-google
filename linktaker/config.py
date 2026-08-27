@@ -33,6 +33,35 @@ RSS_DECODE_DELAY = 2  # seconds between decoding RSS redirect URLs to avoid rate
 # CAPTCHA wait timeout in seconds (how long to wait for user to solve CAPTCHA)
 CAPTCHA_WAIT_TIMEOUT = 120
 
+# ---------------- CAPTCHA avoidance ----------------
+# The settings below exist for one reason: getting challenged less often. None
+# of them defeat a CAPTCHA — they keep a run from looking like the thing that
+# earns one.
+
+# Reuse one Chromium profile directory across runs so cookies, the consent
+# choice, and Google's own "this browser has been fine so far" state carry over.
+# Without it every run arrives cookie-less, which is the strongest single reason
+# a fresh run gets challenged on its very first search. Pass --fresh-profile to
+# start over if the profile itself ever gets flagged.
+PERSIST_PROFILE = True
+BROWSER_PROFILE_DIR = ".browser_profile"
+
+# The fingerprint is generated once and pinned beside the profile. A stored
+# cookie jar that shows up under a different user agent and screen size every
+# run is stranger than either signal on its own, so the two stay in sync.
+FINGERPRINT_FILE = ".fingerprint.json"
+
+# Jitter between result pages within one keyword. Previously "Next" was clicked
+# the instant the page finished loading — ten pages in fifteen seconds, which no
+# human produces.
+PAGE_DELAY_MIN = 0
+PAGE_DELAY_MAX = 0
+
+# Pause after a solved CAPTCHA before touching the next page. Resuming at full
+# speed right after a challenge tends to earn the next one immediately.
+CAPTCHA_COOLDOWN_MIN = 8.0
+CAPTCHA_COOLDOWN_MAX = 10.0
+
 # Social media domains to exclude
 SOCIAL_MEDIA_DOMAINS = {
     "facebook.com", "fb.com",

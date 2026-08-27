@@ -1,5 +1,6 @@
 """Google-specific bits: search URL building, pagination, and link extraction."""
 
+import re
 from datetime import date
 from urllib.parse import parse_qs, quote_plus, urlencode, urlparse, urlunparse
 
@@ -9,7 +10,17 @@ from ..url_utils import is_valid_result_url
 from .base import Engine
 
 # Google's own hosts — its internal links must never reach the output file.
-GOOGLE_BAD_NETLOC = ("google.com", "google.co.", "gstatic.com", "googleusercontent.com")
+# The ad hosts matter more now than they used to: the sweep below reads the raw
+# page source, where ad and conversion-tracking URLs sit in plain text even
+# though no result anchor ever pointed at them.
+GOOGLE_BAD_NETLOC = ("google.com", "google.co.", "gstatic.com", "googleusercontent.com",
+                     "googleadservices.com", "googlesyndication.com", "doubleclick.net",
+                     "googletagmanager.com", "google-analytics.com")
+
+# Hosts that only ever serve page furniture — thumbnails, avatars, markup
+# vocabularies. The sweep below reaches them constantly and none are results.
+GOOGLE_ASSET_HOSTS = ("googleapis.com", "ytimg.com", "ggpht.com",
+                      "schema.org", "w3.org")
 
 RESULTS_PER_PAGE = 10
 
@@ -99,8 +110,58 @@ def unwrap_google_redirect(url: str) -> str:
         return ""
 
 
+# A URL as it appears in the page source, stopping at whatever quoting or
+# bracketing encloses it in the surrounding JSON.
+RESULT_URL_RE = re.compile(r'https?://[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}(?:/[^\s"\'<>\\)\]}]*)?')
+
+# Trailing punctuation the enclosing JSON contributes, never part of the URL.
+URL_TRAILING_JUNK = '\\",\'.;:'
+
+
+def _unescape_page_source(html_content: str) -> str:
+    """Undo the JS string escaping used inside the page's embedded data blobs.
+
+    Google writes `\\/`, `\\u003d` and `\\u0026` in there. Left as-is, a swept
+    URL gets cut short at its first query separator — `watch?v` instead of
+    `watch?v=3K064ikq_Ko`.
+    """
+    return (html_content
+            .replace("\\/", "/")
+            .replace("\\u003d", "=").replace("\\u003D", "=")
+            .replace("\\u0026", "&").replace("\\u0026amp;", "&"))
+
+
+def sweep_result_urls(html_content: str) -> set:
+    """Recover destination URLs from the raw page source.
+
+    Google no longer puts destinations in the markup. Every result anchor now
+    reads `/goto?url=<blob>`, and the blob is an encrypted protobuf — there is
+    no URL inside it to unwrap, and resolving one means a network round trip per
+    result. The destinations are still in the page, inside the JSON blobs its
+    own JavaScript renders from, so a pattern sweep is what is left.
+
+    Deliberately permissive: it also picks up publisher home pages, carousel
+    entries and thumbnails. `is_valid_result_url` and the news filter behind it
+    are what decide which of those survive, which is where that judgement
+    already lives for every other engine.
+    """
+    links = set()
+    for match in RESULT_URL_RE.findall(_unescape_page_source(html_content or "")):
+        url = match.rstrip(URL_TRAILING_JUNK)
+        if any(bad in url for bad in GOOGLE_BAD_NETLOC + GOOGLE_ASSET_HOSTS):
+            continue
+        if is_valid_result_url(url, GOOGLE_BAD_NETLOC):
+            links.add(url)
+    return links
+
+
 def extract_google_links(html_content: str) -> set:
-    """Extract all result links from Google HTML."""
+    """Extract all result links from Google HTML.
+
+    Two paths, unioned: the anchor selectors still work on the script-less HTML
+    curl_cffi receives and on the older markup, while `sweep_result_urls` covers
+    the browser-rendered page, where the anchors carry nothing usable.
+    """
     links = set()
     try:
         soup = BeautifulSoup(html_content, "html.parser")
@@ -111,6 +172,8 @@ def extract_google_links(html_content: str) -> set:
                 if is_valid_result_url(href, GOOGLE_BAD_NETLOC):
                     links.add(href)
 
+        links |= sweep_result_urls(html_content)
+
     except Exception as e:
         print(f"  Error parsing HTML: {e}")
 
@@ -120,12 +183,21 @@ def extract_google_links(html_content: str) -> set:
 def capability_notes(mode: str, sort: str, date_from: date = None,
                      date_until: date = None) -> list:
     """Point out what the News tab leaves out, since that is why --mode exists."""
+    # The News tab stopped being scrapeable: its result anchors are all
+    # `/goto?url=<encrypted blob>`, and unlike the All tab it embeds no
+    # destination URLs anywhere in the page source, so there is nothing left to
+    # recover. It returns zero links rather than failing loudly, which is worth
+    # saying out loud before a run spends its searches there.
+    NWS_DEAD = ("Warning: the News tab yields no links — Google serves its results "
+                "as encrypted /goto redirects with no destination anywhere in the "
+                "page. Use --mode web; it reaches news portals too.")
+
     if mode == "nws":
-        return ["Note: the News tab only lists portals Google already indexes as news "
-                "sources — use --mode web (All tab) or --mode both to reach newer ones."]
+        return [NWS_DEAD]
     if mode == "both":
-        return ["Note: --mode both searches the All tab and the News tab, "
-                "so every keyword costs two searches."]
+        return [NWS_DEAD,
+                "Note: --mode both still spends two searches per keyword, and the "
+                "News tab half of them returns nothing."]
     return []
 
 

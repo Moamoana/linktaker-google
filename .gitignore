@@ -6,3 +6,8 @@
 !news_domains.txt
 
 __pycache__/
+
+# Persistent browser profile and its pinned fingerprint — machine-local state,
+# and the profile holds live Google cookies.
+.browser_profile/
+.fingerprint.json

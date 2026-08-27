@@ -6,12 +6,13 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from . import news_filter
-from .browser import BrowserManager
+from .browser import BrowserManager, reset_profile
 from .config import (
     KEYWORDS_FILE, URLS_FILE, PROXIES_FILE, OUT_FILE, NEWS_DOMAINS_FILE,
     MAX_PAGES_PER_SEARCH, DEFAULT_SORT, DEFAULT_ENGINE, NEWS_FILTER,
     FETCH_MODE, USE_GOOGLE_RSS, RSS_DECODE_DELAY,
     USE_CLOUDFLARE_BYPASS, PARALLEL_WORKERS, SOCIAL_MEDIA_DOMAINS,
+    PERSIST_PROFILE, BROWSER_PROFILE_DIR,
 )
 from .deps import CLOUDSCRAPER_AVAILABLE, STEALTH_AVAILABLE, BROWSERFORGE_AVAILABLE, PLAYWRIGHT_AVAILABLE
 from .engines import ENGINES, MODE_LABELS, SEARCH_MODES, expand_mode, get_engine
@@ -88,6 +89,13 @@ def build_parser():
     parser.add_argument(
         "--proxy", metavar="URL", default=None,
         help="proxy to route requests through, e.g. http://user:password@host:2570 (default: no proxy)",
+    )
+    parser.add_argument(
+        "--fresh-profile", "--fresh_profile", dest="fresh_profile", action="store_true",
+        help=f"delete {BROWSER_PROFILE_DIR}/ and its pinned fingerprint before "
+             f"starting, so the run begins from a clean browser. Use this when "
+             f"the saved profile itself has been flagged and every search is "
+             f"landing on a CAPTCHA",
     )
     parser.add_argument(
         "--mode", choices=SEARCH_MODES, default=None,
@@ -211,6 +219,17 @@ def describe_run(args, engine, mode, url_count):
         print(f"News filter: {args.news_filter} "
               f"({len(args.allowlist)} publisher(s) from {args.news_domains})")
 
+    if PERSIST_PROFILE:
+        print(f"Browser profile: PERSISTENT ({BROWSER_PROFILE_DIR}/) — "
+              f"cookies carry over between runs; --fresh-profile resets it")
+    else:
+        print("Browser profile: fresh each run (PERSIST_PROFILE is off) — "
+              "expect a challenge on the first search")
+
+    if args.max_pages is None:
+        print("Max pages: all — crawling deep into the result set is the biggest "
+              "remaining CAPTCHA trigger; --max-pages 5 cuts it sharply")
+
     for note in engine.capability_notes(mode, args.sort, args.date_from, args.date_until):
         print(note)
 
@@ -268,7 +287,7 @@ def crawl_engine(args, engine, mode):
                                               args.max_pages, engine) or set())
                 # Jitter between search URLs to avoid burst-rate detection
                 if i < len(shuffled) - 1:
-                    delay = random.uniform(8, 20)
+                    delay = random.uniform(1, 5)
                     print(f"  Waiting {delay:.1f}s before next URL...")
                     time.sleep(delay)
         else:
@@ -306,6 +325,9 @@ def crawl_engine(args, engine, mode):
 def main(argv=None):
     """Main execution."""
     args = parse_args(argv)
+
+    if args.fresh_profile:
+        reset_profile()
 
     # Arm the news gate before any extractor runs — every engine reaches it
     # through url_utils.is_valid_result_url.
