@@ -1,4 +1,13 @@
-keywords.txt
-output.txt
-hasil.txt
+# Input/output data — keyword lists, crawl results, proxy lists
+*.txt
+
+# ...except the dependency list, which belongs in the repo
+!requirements.txt
+!news_domains.txt
+
 __pycache__/
+
+# Persistent browser profile and its pinned fingerprint — machine-local state,
+# and the profile holds live Google cookies.
+.browser_profile/
+.fingerprint.json

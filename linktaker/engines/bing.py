@@ -1,7 +1,7 @@
 """Bing-specific bits: search URL building, pagination, and link extraction.
 
-Kept separate from the Google helpers so both engines can share the same crawl
-flow in `fetchers.py` / `browser.py` — see `engines.py` for the glue.
+Kept separate from the Google helpers so every engine can share the same crawl
+flow in `fetchers.py` / `browser.py` — see `__init__.py` for the glue.
 """
 
 import base64
@@ -10,7 +10,8 @@ from urllib.parse import parse_qs, quote, quote_plus, urlencode, urlparse, urlun
 
 from bs4 import BeautifulSoup
 
-from .url_utils import is_valid_result_url
+from ..url_utils import is_valid_result_url
+from .base import Engine
 
 # Bing wraps organic results in its own redirector and marks ads with /aclick.
 BING_BAD_NETLOC = ("bing.com", "bing.net", "go.microsoft.com", "login.live.com",
@@ -115,13 +116,35 @@ def extract_bing_links(html_content: str) -> set:
     return links
 
 
-def capability_notes(mode: str, sort: str, has_dates: bool) -> list:
+def capability_notes(mode: str, sort: str, date_from: date = None,
+                     date_until: date = None) -> list:
     """Warn about the half of the request the chosen Bing vertical cannot serve."""
     notes = []
-    if mode == "nws" and has_dates:
+    if mode == "both":
+        return ["Note: --mode both searches Bing Search (which honours --from/--until) "
+                "and Bing News (which honours --sort latest), so every keyword costs "
+                "two searches."]
+    if mode == "nws" and (date_from or date_until):
         notes.append("Note: Bing News ignores custom date ranges — "
                      "use --mode web so --from/--until take effect.")
     if mode == "web" and sort == "latest":
         notes.append("Note: Bing web search has no date ordering — "
                      "use --mode nws for newest-first results.")
     return notes
+
+
+BING = Engine(
+    name="bing",
+    # Bing Search is the vertical that honours --from/--until, so it is the default.
+    default_mode="web",
+    build_search_url=build_bing_search_url,
+    build_paginated_url=build_bing_paginated_url,
+    extract_links=extract_bing_links,
+    results_selector="li.b_algo, div.news-card, div.newsitem",
+    captcha_selector="#bIframeChallenge, iframe[src*='challenge'], form[action*='challenge']",
+    captcha_url_markers=("/challenge", "bing.com/turing"),
+    capability_notes=capability_notes,
+    # Bing News has no "next" button (infinite scroll), so both verticals page by URL.
+    next_selector=None,
+    captcha_text_markers=("solve the challenge", "one last step"),
+)

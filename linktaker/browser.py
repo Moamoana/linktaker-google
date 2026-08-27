@@ -1,14 +1,34 @@
+import json
+import os
 import random
+import shutil
+import sys
+import time
 from itertools import count
 from urllib.parse import unquote, urlparse, urlunparse
 
-from .config import USER_AGENTS, CAPTCHA_WAIT_TIMEOUT
+from .config import (
+    USER_AGENTS, CAPTCHA_WAIT_TIMEOUT,
+    PERSIST_PROFILE, BROWSER_PROFILE_DIR, FINGERPRINT_FILE,
+    PAGE_DELAY_MIN, PAGE_DELAY_MAX,
+    CAPTCHA_COOLDOWN_MIN, CAPTCHA_COOLDOWN_MAX,
+)
 from .deps import (
     PLAYWRIGHT_AVAILABLE, sync_playwright,
     STEALTH_AVAILABLE, stealth_sync,
     BROWSERFORGE_AVAILABLE, FingerprintGenerator,
 )
 from .engines import GOOGLE
+
+
+# Playwright can override the user agent string, but not navigator.platform,
+# navigator.userAgentData, or the Sec-CH-UA-Platform client hint Chrome attaches
+# to every request. A macOS user agent coming out of a Chromium running on
+# Windows contradicts all three at once — Google answers that with a page that
+# holds no results rather than with a CAPTCHA, which looks like "nothing was
+# scraped" instead of like a block. So the fingerprint follows the real host OS.
+HOST_OS = {"win32": "windows", "darwin": "macos"}.get(sys.platform, "linux")
+HOST_OS_UA_MARKER = {"windows": "Windows", "macos": "Mac OS", "linux": "Linux"}[HOST_OS]
 
 
 def playwright_proxy(proxy_url: str) -> dict:
@@ -30,6 +50,23 @@ def playwright_proxy(proxy_url: str) -> dict:
     return proxy
 
 
+def reset_profile():
+    """Delete the stored browser profile and its pinned fingerprint.
+
+    Google flags profiles as well as addresses; once one is flagged, reusing it
+    only keeps earning challenges. --fresh-profile calls this to start clean.
+    """
+    for path, is_dir in ((BROWSER_PROFILE_DIR, True), (FINGERPRINT_FILE, False)):
+        target = os.path.abspath(path)
+        if not os.path.exists(target):
+            continue
+        try:
+            shutil.rmtree(target) if is_dir else os.remove(target)
+            print(f"Removed {target}")
+        except Exception as e:
+            print(f"Could not remove {target}: {e}")
+
+
 class BrowserManager:
     """Persistent browser manager — one browser instance reused across all pages."""
 
@@ -38,7 +75,6 @@ class BrowserManager:
         self._browser = None
         self._context = None
         self._proxy = proxy
-        self._fingerprint = None
 
     def _generate_fingerprint(self):
         """Generate a realistic desktop-only browser fingerprint using browserforge."""
@@ -53,7 +89,7 @@ class BrowserManager:
             try:
                 fg = FingerprintGenerator(
                     browser='chrome',
-                    os=('windows', 'macos', 'linux'),
+                    os=(HOST_OS,),
                 )
                 fp = fg.generate()
 
@@ -79,6 +115,68 @@ class BrowserManager:
         print(f"  Could not generate desktop fingerprint after {MAX_ATTEMPTS} attempts, using defaults")
         return None
 
+    def _fingerprint_opts(self):
+        """Context options — user agent, locale, viewport — for this profile.
+
+        Generated once and pinned to disk. A stored cookie jar that turns up
+        under a different user agent and screen size on every run is a worse
+        signal than either would be alone, so the fingerprint has to outlive the
+        process the same way the cookies do.
+        """
+        if PERSIST_PROFILE and os.path.exists(FINGERPRINT_FILE):
+            try:
+                with open(FINGERPRINT_FILE, encoding="utf-8") as f:
+                    pinned = json.load(f)
+            except Exception as e:
+                print(f"  Could not read {FINGERPRINT_FILE} ({e}) — generating a fresh one")
+            else:
+                # Pinning is only safe while the pinned value still matches the
+                # machine. A file written on a different OS — or by the earlier
+                # build that picked one at random — would otherwise keep the
+                # contradiction alive for every future run.
+                ua = pinned.get("user_agent", "")
+                if HOST_OS_UA_MARKER in ua:
+                    print(f"  Fingerprint: reusing the one pinned in {FINGERPRINT_FILE}")
+                    return pinned
+                print(f"  Pinned fingerprint claims a different OS than this machine "
+                      f"({HOST_OS}) — discarding it and generating a matching one")
+
+        opts = {}
+        fp = self._generate_fingerprint()
+        if fp:
+            nav = getattr(fp, "navigator", None)
+            if nav:
+                if getattr(nav, "userAgent", None):
+                    opts["user_agent"] = nav.userAgent
+                if getattr(nav, "language", None):
+                    opts["locale"] = nav.language
+
+            screen = getattr(fp, "screen", None)
+            width = int(getattr(screen, "width", 0) or 0) if screen else 0
+            height = int(getattr(screen, "height", 0) or 0) if screen else 0
+            opts["viewport"] = ({"width": width, "height": height}
+                                if width >= 1024 and height
+                                else {"width": 1366, "height": 768})
+            print("  browserforge fingerprint applied")
+        else:
+            # Same constraint as above, and Firefox strings are out too: the
+            # browser underneath is Chromium, so a Gecko user agent contradicts
+            # the client hints just as loudly as the wrong OS does.
+            usable = [ua for ua in USER_AGENTS
+                      if HOST_OS_UA_MARKER in ua and "Firefox" not in ua]
+            opts["user_agent"] = random.choice(usable or USER_AGENTS)
+            opts["viewport"] = {"width": 1366, "height": 768}
+
+        if PERSIST_PROFILE:
+            try:
+                with open(FINGERPRINT_FILE, "w", encoding="utf-8") as f:
+                    json.dump(opts, f, indent=2)
+                print(f"  Fingerprint pinned to {FINGERPRINT_FILE}")
+            except Exception as e:
+                print(f"  Could not pin fingerprint: {e}")
+
+        return opts
+
     def start(self):
         """Launch browser with stealth and fingerprint."""
         if not PLAYWRIGHT_AVAILABLE:
@@ -94,44 +192,38 @@ class BrowserManager:
                 "--no-first-run",
                 "--no-default-browser-check",
                 "--disable-infobars",
+                # A reused profile whose last run was killed reopens with the
+                # "restore pages?" bubble covering the results.
+                "--hide-crash-restore-bubble",
             ],
         }
         proxy_settings = playwright_proxy(self._proxy) if self._proxy else None
         if proxy_settings:
             launch_args["proxy"] = proxy_settings
 
-        self._browser = self._playwright.chromium.launch(**launch_args)
-
-        # Build context options with browserforge fingerprint
-        context_opts = {}
+        context_opts = dict(self._fingerprint_opts())
+        context_opts["java_script_enabled"] = True
         if proxy_settings:
             # Chromium drops the launch-level credentials unless the context repeats them.
             context_opts["proxy"] = proxy_settings
-        self._fingerprint = self._generate_fingerprint()
-        if self._fingerprint:
-            fp = self._fingerprint
-            if hasattr(fp, 'navigator') and fp.navigator:
-                nav = fp.navigator
-                if hasattr(nav, 'userAgent') and nav.userAgent:
-                    context_opts["user_agent"] = nav.userAgent
-                if hasattr(nav, 'language') and nav.language:
-                    context_opts["locale"] = nav.language
-            if hasattr(fp, 'screen') and fp.screen:
-                screen = fp.screen
-                w = getattr(screen, 'width', 1920)
-                h = getattr(screen, 'height', 1080)
-                if w and h and int(w) >= 1024:
-                    context_opts["viewport"] = {"width": int(w), "height": int(h)}
-                else:
-                    context_opts["viewport"] = {"width": 1366, "height": 768}
-            print(f"  browserforge fingerprint applied")
+
+        if PERSIST_PROFILE:
+            # launch_persistent_context takes the launch flags and the context
+            # options together, and hands back the context directly — there is
+            # no separate browser object to keep, so close() has to allow for
+            # self._browser staying None.
+            profile_dir = os.path.abspath(BROWSER_PROFILE_DIR)
+            os.makedirs(profile_dir, exist_ok=True)
+            # Merged rather than double-unpacked: both dicts carry "proxy" when
+            # one is configured, and **a, **b on a shared key is a TypeError.
+            self._context = self._playwright.chromium.launch_persistent_context(
+                profile_dir, **{**launch_args, **context_opts}
+            )
+            print(f"  Persistent profile: {profile_dir}")
         else:
-            context_opts["user_agent"] = random.choice(USER_AGENTS)
-            context_opts["viewport"] = {"width": 1366, "height": 768}
+            self._browser = self._playwright.chromium.launch(**launch_args)
+            self._context = self._browser.new_context(**context_opts)
 
-        context_opts["java_script_enabled"] = True
-
-        self._context = self._browser.new_context(**context_opts)
         return True
 
     def _is_captcha_page(self, page, engine=GOOGLE):
@@ -169,6 +261,9 @@ class BrowserManager:
             if self._is_captcha_page(page, engine):
                 pass  # fall through to _wait_for_results CAPTCHA handler
             else:
+                # Say why, otherwise this looks like a silent failure.
+                print(f"  No results after {initial_timeout_ms // 1000}s and no challenge page "
+                      f"recognised — landed on: {page.url[:100]}")
                 return False
         return self._wait_for_results(page, engine)
 
@@ -186,7 +281,12 @@ class BrowserManager:
                     engine.results_selector,
                     timeout=CAPTCHA_WAIT_TIMEOUT * 1000
                 )
-                print(f"  Search results detected after CAPTCHA solve!")
+                cooldown = random.uniform(CAPTCHA_COOLDOWN_MIN, CAPTCHA_COOLDOWN_MAX)
+                print(f"  Search results detected after CAPTCHA solve! "
+                      f"Cooling off {cooldown:.0f}s before continuing...")
+                # Picking straight back up at full speed after a challenge is a
+                # reliable way to earn the next one.
+                time.sleep(cooldown)
                 return True
             except:
                 print(f"  Timeout waiting for CAPTCHA solve")
@@ -272,6 +372,13 @@ class BrowserManager:
                 if max_pages is not None and page_idx + 1 >= max_pages:
                     break
 
+                # Pause before turning the page. Without this, "Next" is clicked
+                # the moment the load finishes — a burst no reader produces, and
+                # the pattern that draws the challenge in the first place.
+                delay = random.uniform(PAGE_DELAY_MIN, PAGE_DELAY_MAX)
+                print(f"  Waiting {delay:.1f}s before page {page_idx+2}...")
+                time.sleep(delay)
+
                 # Move to the next page: click the engine's button, or open its URL.
                 if engine.next_selector:
                     next_btn = page.query_selector(engine.next_selector)
@@ -302,7 +409,12 @@ class BrowserManager:
         return all_links
 
     def close(self):
-        """Shutdown browser."""
+        """Shutdown browser.
+
+        Closing the context is what flushes the profile's cookies to disk, so a
+        run that skips this loses exactly the state the next run needs. With a
+        persistent profile there is no separate browser to close.
+        """
         try:
             if self._context:
                 self._context.close()

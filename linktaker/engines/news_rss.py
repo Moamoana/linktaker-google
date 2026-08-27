@@ -5,9 +5,9 @@ from urllib.parse import urlparse, parse_qs, urlencode
 
 import curl_cffi.requests as requests
 
-from .config import RSS_DECODE_DELAY
-from .deps import FEEDPARSER_AVAILABLE, feedparser
-from .url_utils import is_valid_result_url
+from ..config import RSS_DECODE_DELAY
+from ..deps import FEEDPARSER_AVAILABLE, feedparser
+from ..url_utils import is_valid_result_url
 
 
 def decode_google_news_url(source_url: str) -> str:

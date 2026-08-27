@@ -14,13 +14,15 @@
 - [Instalasi](#instalasi)
 - [Konfigurasi](#konfigurasi)
 - [Penggunaan](#penggunaan)
-- [Search Engine: Google & Bing](#search-engine-google--bing)
+- [Search Engine: Google, Bing & Yahoo](#search-engine-google-bing--yahoo)
 - [File Input & Output](#file-input--output)
 - [Mode Fetching](#mode-fetching)
 - [Anti-Deteksi & Stealth](#anti-deteksi--stealth)
 - [Proxy & Autentikasi](#proxy--autentikasi)
 - [Google News RSS](#google-news-rss)
+- [Filter Berita (News Filter)](#filter-berita-news-filter)
 - [Filter Social Media](#filter-social-media)
+- [Menjalankan Tes](#menjalankan-tes)
 - [Troubleshooting](#troubleshooting)
 - [Lisensi](#lisensi)
 
@@ -28,10 +30,11 @@
 
 ## Tentang Project
 
-**LinkTaker Google** adalah scraper Python yang dirancang untuk mengekstrak semua URL hasil pencarian dari Google Search maupun Bing Search secara otomatis. Tool ini mendukung:
+**LinkTaker Google** adalah scraper Python yang dirancang untuk mengekstrak semua URL hasil pencarian dari Google, Bing, maupun Yahoo secara otomatis. Tool ini mendukung:
 
 - **Input simpel: cukup keyword** — file txt hanya berisi kata kunci; engine, tanggal, sort, jumlah halaman, dan proxy diatur lewat argumen CLI
-- **Dua search engine** — Google (default) atau Bing lewat `--engine bing`, dengan alur crawl yang sama
+- **Tiga search engine** — Google (default), Bing, atau Yahoo lewat `--engine`, dengan alur crawl yang sama
+- **Pilih tab pencarian** — tab **Semua** (default), tab **Berita**, atau keduanya sekaligus lewat `--mode`
 - **Paginasi otomatis** — menelusuri halaman 1 hingga N dari hasil pencarian
 - **Multi-mode fetching** — `curl_cffi`, `Playwright` (headless browser), atau kombinasi keduanya
 - **Anti-bot detection** — fingerprint browser realistis, stealth mode, dan Cloudflare bypass
@@ -48,8 +51,11 @@
 | Fitur | Deskripsi |
 |---|---|
 | **Keyword Input (txt)** | Cukup isi file txt dengan **keyword saja** (satu per baris) — script yang membangun URL search engine-nya |
-| **Multi Engine** | Google (default) dan Bing — `--engine bing`, satu alur crawl untuk keduanya |
-| **CLI Flags** | `--engine`, `--input`, `--from`, `--until`, `--sort`, `--output`, `--max-pages`, `--proxy`, `--mode` |
+| **Multi Engine** | Google (default), Bing, dan Yahoo — `--engine`, satu alur crawl untuk ketiganya |
+| **Gabungan Semua Engine** | `--engine all` menjalankan Google → Yahoo → Bing berurutan, hasilnya digabung ke satu file `--output` |
+| **Tab Semua / Berita** | `--mode web` (tab Semua, default), `--mode nws` (tab Berita), `--mode both` (gabungan) — tab Semua menangkap portal baru yang belum diakui Google sebagai news site |
+| **Filter Berita** | `--news-filter` menjaga output hanya berisi artikel berita: `smart` (buang host non-berita + URL non-artikel), `strict` (hanya penerbit di `news_domains.txt`), `off` |
+| **CLI Flags** | `--engine`, `--input`, `--from`, `--until`, `--sort`, `--output`, `--max-pages`, `--proxy`, `--mode`, `--news-filter`, `--news-domains` |
 | **Multi-mode Fetch** | `curl` (cepat), `playwright` (akurat), `auto` (fallback otomatis) |
 | **Browser Fingerprinting** | Menggunakan `browserforge` untuk generate fingerprint browser yang realistis |
 | **Stealth Mode** | `playwright-stealth` menyembunyikan tanda-tanda bot/automation |
@@ -58,13 +64,14 @@
 | **Google News RSS** | Fallback RSS feed untuk pencarian berita (tanpa CAPTCHA) |
 | **AMP Stripping** | Membersihkan `amp.`, `/amp/`, dan query param AMP dari URL |
 | **Social Media Filter** | Otomatis mengecualikan 40+ platform media sosial |
+| **Laporan Penolakan** | Setiap run melaporkan host apa saja yang dibuang filter berita, supaya allowlist bisa ditumbuhkan |
 | **Filter Link Internal** | Link internal search engine dan iklan (mis. `bing.com/aclick`) tidak ikut tersimpan |
-| **Bing Redirect Decode** | Membongkar pembungkus `bing.com/ck/a?...&u=a1<base64>` jadi URL aslinya |
+| **Redirect Decode** | Membongkar pembungkus `bing.com/ck/a?...&u=a1<base64>` dan `r.search.yahoo.com/.../RU=<url>/RK=` jadi URL artikel aslinya |
 | **Proxy** | Proxy manual lewat `--proxy` (mendukung `user:password@host:port`), atau rotasi dari `proxies.txt` |
 | **Parallel Processing** | Multi-thread worker untuk mode `curl`/`auto` |
 | **Batch Processing** | Proses banyak keyword sekaligus dari satu file txt (atau `url.txt`) |
 | **Auto Retry** | Retry otomatis hingga 3x untuk halaman yang gagal |
-| **Modular Package** | Kode terpecah per tanggung jawab (`browser.py`, `fetchers.py`, `keywords.py`, dst.) di dalam `linktaker/` |
+| **Modular Package** | Kode terpecah per tanggung jawab di dalam `linktaker/`, dengan satu file per search engine di `linktaker/engines/` |
 
 ---
 
@@ -86,7 +93,7 @@
              ▼            ▼            ▼
         ┌─────────────────────────────────────┐
         │  BeautifulSoup HTML Parser          │
-        │  ├── Extract Google / Bing links    │
+        │  ├── Extract search result links    │
         │  ├── Filter social media            │
         │  ├── Strip AMP artifacts            │
         │  └── Deduplicate URLs               │
@@ -103,22 +110,29 @@ Sejak refactor, `linktaker.py` (dulu 1 file ~1000 baris) sudah dipecah jadi pack
 |---|---|---|
 | `deps.py` | Import dependency opsional (`cloudscraper`, `playwright`, `feedparser`, `browserforge`) + flag `*_AVAILABLE` | — |
 | `config.py` | Semua konstanta (path file, timeout, `FETCH_MODE`, daftar domain sosmed, dll) | — |
-| `url_utils.py` | Strip AMP, filter social media, validasi & parsing link hasil Google | `config` |
-| `bing.py` | URL pencarian Bing (tanggal & sort), paginasi `first=`, decode redirect `ck/a`, parsing link Bing | `config`, `url_utils` |
-| `engines.py` | Adapter `GOOGLE`/`BING` — semua yang berbeda antar engine (URL, selector hasil, tombol next, penanda CAPTCHA) | `bing`, `keywords`, `url_utils` |
-| `browser.py` | `BrowserManager` — lifecycle browser Playwright, deteksi CAPTCHA, paginasi (klik "Next" untuk Google, navigasi URL untuk Bing) | `config`, `deps`, `engines` |
-| `news_rss.py` | Decode/bangun/fetch Google News RSS | `config`, `deps`, `url_utils` |
-| `keywords.py` | Baca file keyword + bangun URL Google dari keyword, `--from`/`--until`, dan `--sort` | — |
-| `io_utils.py` | Baca `url.txt`, `proxies.txt`, `auth.json` | `config` |
-| `fetchers.py` | Fetch via `curl_cffi`/`cloudscraper`, orkestrasi per-URL (`process_one_url`) | `config`, `deps`, `browser`, `engines`, `news_rss` |
-| `cli.py` | `main()` — merangkai semua modul di atas jadi alur end-to-end | Semua modul di atas |
-| `cli.py` (argparse) | Definisi semua flag CLI (`build_parser`, `parse_args`) | `config`, `keywords` |
+| `url_utils.py` | Helper URL yang dipakai **semua** engine: strip AMP, filter social media, gerbang filter berita, validasi link | `config`, `news_filter` |
+| `news_filter.py` | Menjaga output hanya berisi **artikel berita**: blocklist domain non-berita, aturan bentuk URL artikel, allowlist penerbit, laporan penolakan | — |
+| `inputs.py` | Baca file keyword, `url.txt`, `proxies.txt`, `auth.json`, dan parsing tanggal CLI | `config` |
+| `engines/base.py` | Kontrak `Engine` — daftar field yang harus disediakan tiap engine | — |
+| `engines/google.py` | URL Google (`tbs=cdr`/`sbd`), paginasi `start=`, parsing link, objek `GOOGLE` | `url_utils`, `base` |
+| `engines/bing.py` | URL Bing (`filters=ez5`/`sortbydate`), paginasi `first=`, decode redirect `ck/a`, objek `BING` | `url_utils`, `base` |
+| `engines/yahoo.py` | URL Yahoo (`btf=`), paginasi `b=`, decode redirect `/RU=`, objek `YAHOO` | `url_utils`, `base` |
+| `engines/news_rss.py` | Decode/bangun/fetch Google News RSS | `config`, `deps`, `url_utils` |
+| `engines/__init__.py` | Registry `ENGINES` + `get_engine()` | Semua modul engine |
+| `browser.py` | `BrowserManager` — lifecycle browser Playwright, deteksi CAPTCHA, paginasi (klik "Next" atau navigasi URL, tergantung engine) | `config`, `deps`, `engines` |
+| `fetchers.py` | Fetch via `curl_cffi`/`cloudscraper`, orkestrasi per-URL (`process_one_url`) | `config`, `deps`, `browser`, `engines` |
+| `cli.py` | Argparse (`build_parser`, `parse_args`) + `main()` — merangkai semua modul jadi alur end-to-end | Semua modul di atas |
 | `__main__.py` | Entry point untuk `python -m linktaker` | `cli` |
 | `linktaker.py` (root) | Entry point untuk `python linktaker.py` | `cli` |
 
-**Alur import**: `cli.py` ada di lapisan paling atas dan memanggil semua modul lain; modul-modul di bawahnya (`url_utils`, `keywords`, `io_utils`, dst.) tidak saling bergantung kecuali lewat `config`/`deps`, jadi aman diedit paralel di branch berbeda.
+**Alur import**: `cli.py` ada di lapisan paling atas dan memanggil semua modul lain. Di bawahnya, `fetchers.py` dan `browser.py` tidak tahu-menahu soal engine mana yang dipakai — keduanya hanya membaca field dari objek `Engine`. Modul di dalam `engines/` tidak saling bergantung, jadi dua orang bisa menggarap engine berbeda tanpa bentrok.
 
-> **Untuk kontributor:** kalau mau nambah search engine baru (mis. Yahoo/DuckDuckGo), ikuti pola Bing: bikin satu modul berisi URL builder + parser link engine tersebut (contoh `bing.py`), lalu daftarkan sebagai `Engine` baru di `engines.py`. `fetchers.py` dan `browser.py` tidak perlu disentuh — keduanya hanya membaca field dari objek `Engine`.
+> **Untuk kontributor:** menambah search engine baru (mis. DuckDuckGo) = **satu file + satu baris**:
+>
+> 1. Bikin `linktaker/engines/duckduckgo.py` meniru bentuk `bing.py` — URL builder, paginasi, parser link — lalu tutup dengan objek `Engine(...)` di bagian bawah file.
+> 2. Tambahkan objek itu ke tuple di `linktaker/engines/__init__.py`.
+>
+> `--engine` otomatis menerima nama barunya, dan `fetchers.py`/`browser.py` tidak perlu disentuh sama sekali. Jalankan `python tests/test_engines.py` untuk memastikan tidak ada yang putus.
 
 ---
 
@@ -177,6 +191,7 @@ Nilai default ada di [`linktaker/config.py`](linktaker/config.py). Sebagian besa
 | `OUT_FILE` | `"output.txt"` | Default `--output` — file untuk menyimpan link hasil ekstraksi |
 | `PROXIES_FILE` | `"proxies.txt"` | Daftar proxy, dipakai hanya kalau `--proxy` tidak diberikan |
 | `AUTH_FILE` | `"auth.json"` | File kredensial autentikasi (opsional) |
+| `NEWS_DOMAINS_FILE` | `"news_domains.txt"` | Default `--news-domains` — allowlist penerbit berita |
 
 ### Pengaturan Scraping
 
@@ -184,7 +199,8 @@ Nilai default ada di [`linktaker/config.py`](linktaker/config.py). Sebagian besa
 |---|---|---|
 | `MAX_PAGES_PER_SEARCH` | `None` | Default `--max-pages`. `None` = ambil semua halaman |
 | `DEFAULT_SORT` | `"relevance"` | Default `--sort` (`relevance` atau `latest`) |
-| `DEFAULT_ENGINE` | `"google"` | Default `--engine` (`google` atau `bing`) |
+| `DEFAULT_ENGINE` | `"google"` | Default `--engine` (`google`, `bing`, atau `yahoo`) |
+| `NEWS_FILTER` | `"smart"` | Default `--news-filter` (`smart`, `strict`, atau `off`) — lihat [Filter Berita](#filter-berita-news-filter) |
 | `WAIT_SEC` | `20` | Timeout request dalam detik |
 | `PARALLEL_WORKERS` | `5` | Jumlah thread paralel (mode `curl`/`auto`) |
 | `CONSECUTIVE_EMPTY_PAGES` | `2` | Stop setelah N halaman berturut-turut tanpa link baru |
@@ -230,10 +246,17 @@ Bentuk paling singkat (tanpa tanggal, langsung search apa adanya dari Google):
 python linktaker.py --input keyword1.txt
 ```
 
-Crawl dari Bing, bukan Google:
+Crawl dari Bing atau Yahoo, bukan Google:
 
 ```bash
 python linktaker.py --engine bing --input keyword1.txt --from 2026-08-08 --until 2026-08-16 --sort latest
+python linktaker.py --engine yahoo --input keyword1.txt --from 2026-08-08 --until 2026-08-16
+```
+
+Atau jalankan ketiganya sekaligus (Google → Yahoo → Bing) ke satu file output gabungan:
+
+```bash
+python linktaker.py --engine all --input keyword1.txt --from 2026-08-08 --until 2026-08-16 --sort latest --mode both --output hasil.txt
 ```
 
 Bisa juga dijalankan sebagai module:
@@ -246,15 +269,17 @@ python -m linktaker --input keyword1.txt
 
 | Argumen | Wajib | Default | Deskripsi |
 |---|---|---|---|
-| `--engine {google,bing}` | tidak | `google` | Search engine yang di-crawl |
+| `--engine {google,bing,yahoo,all}` | tidak | `google` | Search engine yang di-crawl. `all` menjalankan Google → Yahoo → Bing berurutan dan menggabung hasilnya ke satu `--output` |
 | `--input FILE` | tidak | `keywords.txt` | File txt berisi keyword, satu per baris |
 | `--from YYYY-MM-DD` | tidak | — | Ambil hasil mulai tanggal ini. Tanpa `--from`/`--until`, pencarian jalan tanpa filter tanggal |
 | `--until YYYY-MM-DD` | tidak | — | Ambil hasil sampai tanggal ini |
-| `--sort {latest,relevance}` | tidak | `relevance` | `latest` = urut terbaru, `relevance` = urutan default engine. Lihat [catatan Bing](#search-engine-google--bing) |
+| `--sort {latest,relevance}` | tidak | `relevance` | `latest` = urut terbaru, `relevance` = urutan default engine. Lihat [catatan per engine](#search-engine-google-bing--yahoo) |
 | `--output FILE` | tidak | `output.txt` | File tujuan hasil link |
 | `--max-pages N` | tidak | semua | Maksimum halaman hasil yang di-crawl per keyword |
 | `--proxy URL` | tidak | tanpa proxy | Proxy manual, mis. `http://user:password@proxycrawler.dashboard.nolimit.id:2570` |
-| `--mode {nws,web}` | tidak | `nws` (google), `web` (bing) | `nws` = pencarian berita, `web` = pencarian web biasa |
+| `--mode {web,nws,both}` | tidak | `web` | `web` = tab **Semua/All**, `nws` = tab **Berita**, `both` = crawl kedua tab lalu digabung. Lihat [Tab pencarian](#tab-pencarian-semua-vs-berita) |
+| `--news-filter {smart,strict,off}` | tidak | `smart` | Seberapa ketat output disaring jadi link berita saja. Lihat [Filter Berita](#filter-berita-news-filter) |
+| `--news-domains FILE` | tidak | `news_domains.txt` | File allowlist penerbit, satu domain per baris |
 | `-h`, `--help` | — | — | Tampilkan bantuan |
 
 Contoh lengkap dengan proxy:
@@ -268,8 +293,11 @@ python linktaker.py --input keyword1.txt --from 2026-08-08 --until 2026-08-16 \
 Setiap keyword diubah jadi URL pencarian, contoh untuk `kpk` dengan perintah di atas:
 
 ```text
-https://www.google.com/search?q=kpk&tbm=nws&tbs=cdr:1,cd_min:8/8/2026,cd_max:8/16/2026,sbd:1
+https://www.google.com/search?q=kpk&tbs=cdr:1,cd_min:8/8/2026,cd_max:8/16/2026,sbd:1
 ```
+
+URL di atas adalah tab **Semua** (tanpa `tbm`). Dengan `--mode nws` keyword yang sama jadi
+`…&q=kpk&tbm=nws&tbs=…` (tab Berita), dan `--mode both` membangun keduanya.
 
 Dengan `--engine bing`, URL yang dibangun:
 
@@ -289,38 +317,74 @@ https://another-site.com/news/3
 
 ---
 
-## Search Engine: Google & Bing
+## Search Engine: Google, Bing & Yahoo
 
-Alur crawl-nya sama untuk kedua engine — yang berbeda hanya cara membangun URL, selector hasil, dan cara pindah halaman. Semuanya terkumpul di [`linktaker/engines.py`](linktaker/engines.py).
+Alur crawl-nya sama untuk ketiga engine — yang berbeda hanya cara membangun URL, selector hasil, dan cara pindah halaman. Semuanya terkumpul satu file per engine di [`linktaker/engines/`](linktaker/engines/).
 
 ```bash
 python linktaker.py --engine bing --input keyword1.txt --from 2026-08-08 --until 2026-08-16 --sort latest
 ```
 
+### Menjalankan Semua Engine Sekaligus (`--engine all`)
+
+```bash
+python linktaker.py --engine all --input keyword1.txt --from 2026-08-08 --until 2026-08-16 --sort latest --mode both --output hasil.txt
+```
+
+Menjalankan Google, lalu Yahoo, lalu Bing secara berurutan dengan argumen yang sama (`--from`, `--until`, `--sort`, `--mode`, dll), dan menggabung semua link unik dari ketiganya ke satu file `--output`. Kalau `--mode` tidak diberikan, tiap engine tetap memakai default tab-nya masing-masing (`web` untuk Google/Bing, satu-satunya vertical untuk Yahoo). Berguna untuk sekali jalan mendapat cakupan maksimum tanpa menjalankan tiga perintah terpisah dan menggabung filenya secara manual.
+
 ### Perbedaan Kemampuan
 
-| | Google | Bing (`--mode web`) | Bing (`--mode nws`) |
-|---|---|---|---|
-| Vertical | Google News (`tbm=nws`) / web | Bing Search | Bing News |
-| `--from` / `--until` | ✅ `tbs=cdr:1,cd_min,cd_max` | ✅ `filters=ex1:"ez5_<hari>_<hari>"` | ❌ diabaikan Bing |
-| `--sort latest` | ✅ `tbs=…,sbd:1` | ❌ tidak ada urutan by-date | ✅ `qft=sortbydate="1"` |
-| Paginasi | klik tombol **Next** (`#pnnext`) | navigasi URL `&first=11,21,…` | navigasi URL `&first=11,21,…` |
-| Default `--mode` | `nws` | `web` | — |
+| | Google | Bing (`--mode web`) | Bing (`--mode nws`) | Yahoo |
+|---|---|---|---|---|
+| Vertical | tab Semua (default) / tab Berita (`tbm=nws`) | Bing Search | Bing News | Yahoo Search |
+| `--from` / `--until` | ✅ `tbs=cdr:1,cd_min,cd_max` | ✅ `filters=ex1:"ez5_<hari>_<hari>"` | ❌ diabaikan Bing | ⚠️ didekati dengan `btf=d/w/m` |
+| `--sort latest` | ✅ `tbs=…,sbd:1` | ❌ tidak ada urutan by-date | ✅ `qft=sortbydate="1"` | ❌ tidak ada urutan by-date |
+| Paginasi | klik tombol **Next** (`#pnnext`) | navigasi URL `&first=11,21,…` | navigasi URL `&first=11,21,…` | navigasi URL `&b=11,21,…` |
+| Default `--mode` | `web` | `web` | — | `web` (nws tidak tersedia) |
 
-Keterbatasan pada kolom Bing itu datang dari Bing sendiri, bukan dari tool ini: rentang tanggal kustom hanya berlaku di Bing Search, sedangkan urutan terbaru hanya ada di Bing News. Kalau Anda meminta kombinasi yang tidak didukung, script mencetak catatan di awal run, misalnya:
+### Tab Pencarian: Semua vs Berita
+
+Google punya dua tab yang relevan, dan `--mode` memilih di antaranya:
+
+| `--mode` | Tab | Kapan dipakai |
+|---|---|---|
+| `web` (default) | **Semua / All** — `https://www.google.com/search?q=…` | Cakupan terluas. Portal berita baru yang belum diakui Google sebagai *news source* tetap muncul di sini |
+| `nws` | **Berita** — `…&tbm=nws` | Hasil lebih bersih (murni artikel), tapi terbatas pada portal yang sudah terdaftar sebagai news site |
+| `both` | Semua + Berita | Crawl dua-duanya lalu gabung link-nya (duplikat otomatis hilang). Biayanya dua kali pencarian per keyword |
+
+Filter tanggal (`--from`/`--until` → `tbs=cdr:1,…`) dan urutan terbaru (`--sort latest` → `sbd:1`)
+berlaku sama di kedua tab, jadi tidak ada yang hilang saat pindah ke tab Semua.
+
+```bash
+# cakupan maksimum: tab Semua + tab Berita, rentang tanggal, urut terbaru
+python linktaker.py --input keyword1.txt --mode both     --from 2026-08-08 --until 2026-08-16 --sort latest
+```
+
+Untuk Bing, `--mode both` juga berguna: Bing Search yang menghormati `--from`/`--until`
+dan Bing News yang menghormati `--sort latest` di-crawl sekaligus. Untuk Yahoo tidak ada
+efeknya — hanya ada satu vertical, jadi URL-nya di-crawl sekali saja.
+
+Keterbatasan pada kolom Bing dan Yahoo datang dari engine-nya sendiri, bukan dari tool ini:
+
+- **Bing** memisahkan dua kemampuan ke dua vertical: rentang tanggal kustom hanya ada di Bing Search, urutan terbaru hanya ada di Bing News.
+- **Yahoo** tidak punya rentang tanggal kustom sama sekali — hanya filter relatif "past day / week / month". Script memilih bucket terdekat yang masih menampung rentang Anda, jadi sebagian hasil bisa jatuh di luar rentang. Yahoo juga tidak punya urutan by-date, dan `news.search.yahoo.com` menolak koneksi sehingga `--mode nws` otomatis memakai web search.
+
+Kalau Anda meminta kombinasi yang tidak didukung, script mencetak catatan di awal run, misalnya:
 
 ```text
 Note: Bing web search has no date ordering — use --mode nws for newest-first results.
+Note: Yahoo has no custom date range — using its 'past month' filter (btf=m) as the closest match; some results may fall outside the requested range.
 ```
 
 Hasil tetap diambil, hanya bagian yang tidak didukung itu saja yang diabaikan engine-nya.
 
-### Yang Dibuang dari Hasil Bing
+### Yang Dibuang dari Hasil Bing & Yahoo
 
-- Link internal Bing (`bing.com`, `bing.net`, `go.microsoft.com`, `login.live.com`)
-- Iklan — hanya `li.b_algo` (hasil organik) yang dibaca, `li.b_ad` dilewati
-- Redirect `https://www.bing.com/ck/a?…&u=a1<base64>` dibongkar dulu jadi URL asli; kalau gagal di-decode, link dibuang
-- Social media dan URL tidak valid — sama seperti Google
+- **Link internal engine** — `bing.com`, `bing.net`, `go.microsoft.com` untuk Bing; `search.yahoo.com`, `ads.yahoo.com`, `guce.yahoo.com` untuk Yahoo
+- **Iklan** — hanya hasil organik yang dibaca (`li.b_algo` di Bing, `div.algo` di Yahoo), blok iklan dilewati lewat struktur HTML-nya
+- **Redirect/tracking URL** dibongkar dulu jadi URL artikel asli: `bing.com/ck/a?…&u=a1<base64>` dan `r.search.yahoo.com/…/RU=<url>/RK=`. Kalau gagal di-decode, link dibuang
+- **Social media dan URL tidak valid** — sama seperti Google
 
 ---
 
@@ -499,7 +563,7 @@ Set `USE_GOOGLE_RSS = True` di konfigurasi.
 
 ### Batasan
 
-- Hanya berfungsi untuk pencarian Google News (`tbm=nws`)
+- Hanya berfungsi untuk pencarian tab Berita (`tbm=nws`) — jadi hanya aktif pada `--mode nws` atau `--mode both`
 - Jumlah hasil terbatas (biasanya ~20–100 item)
 - URL decode mungkin gagal untuk beberapa format baru
 - Rentang tanggal `--from`/`--until` belum didukung RSS (hanya filter relatif `qdr:*`)
@@ -513,6 +577,92 @@ Set `USE_GOOGLE_RSS = True` di konfigurasi.
 | `tbs=qdr:w` | `7d` | 1 minggu terakhir |
 | `tbs=qdr:m` | `30d` | 1 bulan terakhir |
 | `tbs=qdr:y` | `1y` | 1 tahun terakhir |
+
+---
+
+## Filter Berita (News Filter)
+
+Google tab Berita mengembalikan portal yang sudah dia klasifikasikan sebagai sumber berita, jadi hasilnya relatif bersih. **Bing dan Yahoo tidak**: keduanya mengembalikan apa pun yang cocok dengan keyword — kamus, konverter zona waktu, situs booking, halaman produk, portal layanan pemerintah — dan semuanya dulu ikut masuk ke file output.
+
+`news_filter.py` adalah gerbang yang dilewati **setiap** link sebelum boleh ditulis ke output, dan `--news-filter` mengatur seberapa ketat gerbang itu.
+
+### Tiga Level
+
+| Level | Yang Lolos | Kapan Dipakai |
+|---|---|---|
+| `smart` *(default)* | Semua link yang **berbentuk artikel** dan host-nya bukan domain non-berita yang dikenal | Pemakaian harian. Portal baru yang belum ada di allowlist tetap ikut terjaring |
+| `strict` | **Hanya** host yang terdaftar di `news_domains.txt`, dan tetap harus berbentuk artikel | Saat daftar kliping harus bersih di atas segalanya — terutama untuk Bing dan Yahoo |
+| `off` | Semua link non-sosmed, seperti perilaku sebelum filter ini ada | Membandingkan hasil, atau saat filter dicurigai membuang link yang valid |
+
+```bash
+# default: smart, tidak perlu ditulis
+python linktaker.py --engine bing --input keywords.txt
+
+# daftar kliping bersih: hanya penerbit yang sudah didaftarkan
+python linktaker.py --engine bing --input keywords.txt --news-filter strict
+
+# matikan filter untuk membandingkan
+python linktaker.py --engine bing --input keywords.txt --news-filter off
+```
+
+### Apa yang Dibuang `smart`
+
+1. **Host non-berita yang dikenal** — ensiklopedia dan kamus (`wikipedia.org`, `sinonim.com`, `britannica.com`), jam/kalender/kalkulator (`worldtimebuddy.com`, `24timezones.com`, `time.is`), travel dan tiket (`traveloka.com`, `tiket.com`, `agoda.com`), marketplace (`tokopedia.com`, `shopee.co.id`, `lazada.co.id`), lowongan kerja, database hukum, platform blog (`kompasiana.com`, `blogspot.com`), dan **agregator** (`msn.com`, `headtopics.com`, `news.google.com` — berisi berita asli, tapi salinan, bukan sumbernya).
+2. **Situs institusi** — apa pun berakhiran `.go.id`, `.gov.my`, `.ac.id`, `.edu`, `.mil`, dan sejenisnya. Mereka menerbitkan siaran pers, bukan jurnalisme.
+3. **URL yang bukan artikel** — homepage, `/tag/…`, `/kategori/…` tanpa id, `/indeks`, `/search`, halaman login, sitemap, dan file (`.pdf`, `.jpg`, `.xml`).
+
+Sebuah URL dianggap **berbentuk artikel** kalau path-nya membawa salah satu dari: tanggal terbit (`/2026/08/20/…`), id CMS (5 digit atau lebih, termasuk permalink WordPress lama `?p=112078`), atau slug judul minimal 3 kata (`kpk-tangkap-bupati-sidoarjo`).
+
+> Kata "listing" seperti `kategori` boleh muncul sebagai awalan artikel asli — `infopublik.id/kategori/nasional/985004/kpk-tahan-eks-pejabat` tetap lolos karena membawa id berita. Yang tidak membawa id dianggap halaman daftar dan dibuang.
+
+### `news_domains.txt` — Allowlist Penerbit
+
+Satu domain per baris, subdomain otomatis ikut: `tribunnews.com` sudah mencakup `surabaya.tribunnews.com`, `fajar.co.id` mencakup `harian.fajar.co.id`. Baris kosong dan `#` diabaikan, dan skema/path yang tidak sengaja ikut ter-paste dibersihkan sendiri (`https://tempo.co/` → `tempo.co`).
+
+```text
+# news_domains.txt
+detik.com
+tribunnews.com
+kompas.com
+theedgemalaysia.com
+```
+
+File bawaan berisi **330 penerbit** — dipanen dari crawl tab Berita Google, ditambah desk nasional Indonesia, Malaysia, Singapura, dan kantor berita internasional.
+
+Peranannya berbeda per level: di `strict` file ini adalah satu-satunya pintu masuk; di `smart` dia jalur cepat — domain yang terdaftar melewati semua pemeriksaan negatif, jadi portal dengan pola URL tidak lazim tetap lolos.
+
+`--news-filter strict` **menolak jalan** kalau allowlist-nya kosong atau filenya tidak ada, supaya tidak ada run panjang yang berakhir dengan output kosong.
+
+### Laporan Penolakan
+
+Setiap run menutup dengan daftar host yang dibuang, terbanyak dulu:
+
+```text
+News filter dropped 1917 link(s) from 284 host(s):
+    185  sinonim.com
+    143  msn.com
+    106  bekasikab.go.id
+     97  wikipedia.org
+     46  traveloka.com
+  ... and 269 more host(s)
+Any real publisher listed above belongs in news_domains.txt.
+```
+
+Inilah cara `news_domains.txt` tumbuh: yang benar-benar penerbit dipindahkan ke allowlist, sisanya membuktikan filternya bekerja.
+
+### Efek pada Output Nyata
+
+Diukur dari tiga file output run 2026-08-20:
+
+| File | Sebelum | `smart` | `strict` |
+|---|---|---|---|
+| `output.txt` (Google) | 661 | 642 (97%) | 627 (95%) |
+| `outputbing.txt` (Bing) | 3341 | 1355 (41%) | 833 (25%) |
+| `outputyahoo.txt` (Yahoo) | 2206 | 618 (28%) | 274 (12%) |
+
+Google nyaris tidak berubah karena memang sudah bersih — yang dibuang cuma situs pemerintah, Kompasiana, dan agregator. Bing dan Yahoo kehilangan mayoritas isinya, dan itu memang intinya.
+
+Sisa yang masih lolos `smart` di Bing/Yahoo adalah **long tail** situs SEO dan korporat yang mustahil di-blocklist satu per satu (`idezia.com`, `jasapenulisartikel.my.id`, halaman produk perusahaan). Untuk kedua engine ini, `--news-filter strict` adalah level yang benar-benar menjamin "hanya berita".
 
 ---
 
@@ -539,6 +689,18 @@ LinkTaker secara otomatis mengecualikan URL dari **40+ platform media sosial**, 
 </details>
 
 Hal ini memastikan output hanya berisi link artikel/website yang relevan.
+
+---
+
+## Menjalankan Tes
+
+Tes regresi berjalan **tanpa jaringan** — halaman hasil pencarian dipalsukan, lalu dicek apakah paginasi, decode redirect, penyaringan link, dan [filter berita](#filter-berita-news-filter) masih benar untuk ketiga engine:
+
+```bash
+python tests/test_engines.py
+```
+
+Keluaran berakhir dengan `ALL CHECKS PASSED` kalau semua beres. Jalankan ini setiap kali menyentuh `engines/`, `browser.py`, `fetchers.py`, atau `news_filter.py`.
 
 ---
 
@@ -577,6 +739,10 @@ pip install browserforge
 pip install feedparser
 ```
 
+### Yahoo: hasil kosong atau halaman consent
+
+Yahoo kadang menampilkan halaman consent (`guce.yahoo.com`) sebelum hasil muncul. Script memperlakukannya seperti CAPTCHA: browser terbuka, Anda klik persetujuannya, lalu crawl lanjut sendiri.
+
 ### Bing: `One last step / solve the challenge`
 
 Bing menampilkan halaman challenge kalau lalu lintasnya dianggap mencurigakan. Script mendeteksinya dan menunggu Anda menyelesaikannya di jendela browser (timeout 120 detik), sama seperti CAPTCHA Google. Kalau sering muncul: kecilkan `--max-pages`, beri jeda antar run, atau pakai `--proxy`.
@@ -611,19 +777,26 @@ linktaker-google/
 ├── linktaker.py          # Entry point — `python linktaker.py --input keyword1.txt`
 ├── linktaker/            # Package utama — bisa juga `python -m linktaker`
 │   ├── __init__.py
-│   ├── __main__.py       # Entry point
-│   ├── deps.py           # Optional-dependency imports (cloudscraper, playwright, dst.)
+│   ├── __main__.py       # Entry point untuk `python -m linktaker`
+│   ├── cli.py            # Argparse + main() — orkestrasi end-to-end
 │   ├── config.py         # Semua konstanta konfigurasi
-│   ├── browser.py        # BrowserManager (Playwright)
-│   ├── url_utils.py      # Strip AMP, filter social media, parsing link Google
-│   ├── bing.py           # URL Bing, paginasi first=, decode redirect, parsing link Bing
-│   ├── engines.py        # Adapter GOOGLE / BING untuk alur crawl bersama
-│   ├── news_rss.py       # Google News RSS decode/build/fetch
-│   ├── keywords.py       # Baca file keyword + builder URL Google (tanggal & sort)
-│   ├── io_utils.py       # Baca url.txt / proxies.txt / auth.json
+│   ├── deps.py           # Optional-dependency imports (cloudscraper, playwright, dst.)
+│   ├── browser.py        # BrowserManager (Playwright) — engine-agnostic
 │   ├── fetchers.py       # curl_cffi, cloudscraper, orkestrasi fetch per URL
-│   └── cli.py            # argparse + main() — orkestrasi end-to-end
+│   ├── inputs.py         # Baca keyword/url.txt/proxies.txt/auth.json + parsing tanggal
+│   ├── url_utils.py      # Helper URL untuk semua engine (AMP, sosmed, validasi)
+│   ├── news_filter.py    # Gerbang berita: blocklist, bentuk URL artikel, allowlist
+│   └── engines/          # Satu file per search engine
+│       ├── __init__.py   # Registry ENGINES + get_engine()
+│       ├── base.py       # Kontrak Engine
+│       ├── google.py     # Google Search / Google News
+│       ├── bing.py       # Bing Search / Bing News
+│       ├── yahoo.py      # Yahoo Search
+│       └── news_rss.py   # Google News RSS (opsional)
+├── tests/
+│   └── test_engines.py  # Tes regresi 3 engine, tanpa jaringan
 ├── requirements.txt     # Daftar dependencies Python
+├── news_domains.txt     # Allowlist penerbit berita — default `--news-domains`
 ├── keywords.txt         # (Dibuat user) Input keyword — default `--input`
 ├── url.txt              # (Dibuat user, opsional) Input URL pencarian manual
 ├── output.txt           # (Auto-generated) Hasil link — default `--output`
