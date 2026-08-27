@@ -19,6 +19,7 @@ YAHOO_BAD_NETLOC = ("search.yahoo.com", "ads.yahoo.com", "beap.gemini.yahoo.com"
                     "help.yahoo.com", "guce.yahoo.com")
 
 RESULTS_PER_PAGE = 10
+YAHOO_SEARCH_HOST = "https://id.search.yahoo.com"
 
 # Organic results only — Yahoo keeps ads outside `div.algo`.
 YAHOO_LINK_SELECTORS = (
@@ -67,7 +68,7 @@ def build_yahoo_search_url(keyword: str, date_from: date = None, date_until: dat
     if btf:
         params["btf"] = btf
 
-    return "https://search.yahoo.com/search?" + urlencode(params, quote_via=quote_plus)
+    return YAHOO_SEARCH_HOST + "/search?" + urlencode(params, quote_via=quote_plus)
 
 
 def build_yahoo_paginated_url(base_url: str, page_index: int) -> str:
