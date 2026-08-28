@@ -1,0 +1,14 @@
+[Unit]
+Description=Jalankan LinkTaker setiap 3 jam
+
+[Timer]
+# 00:00, 03:00, 06:00, ... waktu lokal laptop.
+OnCalendar=*-*-* 00/3:00:00
+# Laptop sering di-suspend/mati: kalau jadwal terlewat, jalankan begitu nyala.
+Persistent=true
+# Sebar 0-10 menit supaya tidak selalu request tepat di menit yang sama.
+RandomizedDelaySec=600
+Unit=linktaker.service
+
+[Install]
+WantedBy=timers.target

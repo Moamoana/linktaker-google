@@ -12,6 +12,7 @@ from .config import (
     PERSIST_PROFILE, BROWSER_PROFILE_DIR, FINGERPRINT_FILE,
     PAGE_DELAY_MIN, PAGE_DELAY_MAX,
     CAPTCHA_COOLDOWN_MIN, CAPTCHA_COOLDOWN_MAX,
+    HEADLESS, ON_CAPTCHA,
 )
 from .deps import (
     PLAYWRIGHT_AVAILABLE, sync_playwright,
@@ -70,11 +71,19 @@ def reset_profile():
 class BrowserManager:
     """Persistent browser manager — one browser instance reused across all pages."""
 
-    def __init__(self, proxy=None):
+    def __init__(self, proxy=None, headless=None, on_captcha=None):
         self._playwright = None
         self._browser = None
         self._context = None
         self._proxy = proxy
+        # What the run asked for...
+        self._headless = HEADLESS if headless is None else headless
+        self._on_captcha = ON_CAPTCHA if on_captcha is None else on_captcha
+        # ...and what the browser that is actually open was launched as. The two
+        # differ for the length of a CAPTCHA handoff, and every decision about
+        # whether a window already exists has to read this one.
+        self._live_headless = None
+        self._warned_no_profile = False
 
     def _generate_fingerprint(self):
         """Generate a realistic desktop-only browser fingerprint using browserforge."""
@@ -177,16 +186,23 @@ class BrowserManager:
 
         return opts
 
-    def start(self):
-        """Launch browser with stealth and fingerprint."""
+    def start(self, headless=None):
+        """Launch browser with stealth and fingerprint.
+
+        `headless` overrides the configured default for this launch only — the
+        CAPTCHA handoff uses it to reopen the same profile with a window
+        without changing what the rest of the run is set to.
+        """
         if not PLAYWRIGHT_AVAILABLE:
             print("  Playwright not installed.")
             return False
 
+        is_headless = self._headless if headless is None else headless
+
         self._playwright = sync_playwright().start()
 
         launch_args = {
-            "headless": False,
+            "headless": is_headless,
             "args": [
                 "--disable-blink-features=AutomationControlled",
                 "--no-first-run",
@@ -224,6 +240,33 @@ class BrowserManager:
             self._browser = self._playwright.chromium.launch(**launch_args)
             self._context = self._browser.new_context(**context_opts)
 
+        self._live_headless = is_headless
+        print(f"  Browser mode: {'headless' if is_headless else 'headed'}")
+        return True
+
+    def _new_page(self):
+        """A tab with the run's stealth patches and timeout policy applied."""
+        page = self._context.new_page()
+        if STEALTH_AVAILABLE:
+            stealth_sync(page)
+        page.set_default_timeout(0)
+        return page
+
+    def _relaunch(self, headless: bool) -> bool:
+        """Reopen the same profile in the other window mode.
+
+        Chromium decides headless at launch and Playwright exposes no way to
+        change it afterwards, so switching means a full stop and start. That is
+        only survivable because PERSIST_PROFILE keeps the cookie jar on disk:
+        close() flushes it, and the next launch reads it straight back, which is
+        what carries a solved CAPTCHA across the swap. Chromium also holds a
+        single-instance lock on the profile directory, so the close has to fully
+        complete before the next launch — hence no overlap here.
+        """
+        self.close()
+        if not self.start(headless=headless):
+            print("  Could not reopen the browser after the mode switch")
+            return False
         return True
 
     def _is_captcha_page(self, page, engine=GOOGLE):
@@ -245,11 +288,20 @@ class BrowserManager:
 
         return False
 
-    def _wait_for_page_ready(self, page, engine=GOOGLE, initial_timeout_ms: int = 15000) -> bool:
+    def _wait_for_page_ready(self, page, engine=GOOGLE, resume_url=None,
+                             initial_timeout_ms: int = 15000):
         """
         Wait for either search results OR a CAPTCHA page to appear after navigation.
         If CAPTCHA, hand off to _wait_for_results so user can solve it.
-        Returns True if results are eventually visible, False otherwise.
+
+        Returns (results_visible, page). The page comes back because clearing a
+        CAPTCHA can replace the browser underneath it, which leaves the caller's
+        original tab attached to a context that no longer exists; work with the
+        returned one from here on.
+
+        resume_url is where to reopen after such a swap. Without it the CAPTCHA
+        page's own URL is used, which is the /sorry/ page rather than the
+        results the caller wanted.
         """
         try:
             page.wait_for_selector(
@@ -264,37 +316,109 @@ class BrowserManager:
                 # Say why, otherwise this looks like a silent failure.
                 print(f"  No results after {initial_timeout_ms // 1000}s and no challenge page "
                       f"recognised — landed on: {page.url[:100]}")
-                return False
-        return self._wait_for_results(page, engine)
+                return False, page
+        return self._wait_for_results(page, engine, resume_url)
 
-    def _wait_for_results(self, page, engine=GOOGLE):
-        """Wait for search results. Distinguishes CAPTCHA from end-of-results."""
+    def _wait_for_results(self, page, engine=GOOGLE, resume_url=None):
+        """Wait for search results. Distinguishes CAPTCHA from end-of-results.
+
+        Returns (results_visible, page) — see _wait_for_page_ready on why the
+        page is part of the return.
+        """
         results = page.query_selector_all(engine.results_selector)
         if results:
-            return True
+            return True, page
 
         # No results found — check if it's actually a CAPTCHA
         if self._is_captcha_page(page, engine):
-            print(f"  CAPTCHA detected! Solve it in the browser window... (waiting up to {CAPTCHA_WAIT_TIMEOUT}s)")
-            try:
-                page.wait_for_selector(
-                    engine.results_selector,
-                    timeout=CAPTCHA_WAIT_TIMEOUT * 1000
-                )
-                cooldown = random.uniform(CAPTCHA_COOLDOWN_MIN, CAPTCHA_COOLDOWN_MAX)
-                print(f"  Search results detected after CAPTCHA solve! "
-                      f"Cooling off {cooldown:.0f}s before continuing...")
-                # Picking straight back up at full speed after a challenge is a
-                # reliable way to earn the next one.
-                time.sleep(cooldown)
-                return True
-            except:
-                print(f"  Timeout waiting for CAPTCHA solve")
-                return False
+            return self._handle_captcha(page, engine, resume_url)
 
         # Not a CAPTCHA — just no results (end of results or empty page)
         print(f"  No results on this page (end of results)")
-        return False
+        return False, page
+
+    def _await_solve(self, page, engine) -> bool:
+        """Sit on the challenge page until results replace it, or time out."""
+        print(f"  CAPTCHA detected! Solve it in the browser window... "
+              f"(waiting up to {CAPTCHA_WAIT_TIMEOUT}s)")
+        try:
+            page.wait_for_selector(
+                engine.results_selector,
+                timeout=CAPTCHA_WAIT_TIMEOUT * 1000
+            )
+        except Exception:
+            print(f"  Timeout waiting for CAPTCHA solve")
+            return False
+
+        cooldown = random.uniform(CAPTCHA_COOLDOWN_MIN, CAPTCHA_COOLDOWN_MAX)
+        print(f"  Search results detected after CAPTCHA solve! "
+              f"Cooling off {cooldown:.0f}s before continuing...")
+        # Picking straight back up at full speed after a challenge is a
+        # reliable way to earn the next one.
+        time.sleep(cooldown)
+        return True
+
+    def _handle_captcha(self, page, engine, resume_url=None):
+        """Clear a challenge page, borrowing a window only if one is needed.
+
+        Returns (results_visible, page).
+        """
+        target = resume_url or page.url
+
+        # A window is already on screen — this is the original behaviour, and
+        # nothing needs to be relaunched to let someone type into it.
+        if not self._live_headless:
+            return self._await_solve(page, engine), page
+
+        if self._on_captcha == "skip":
+            print(f"  CAPTCHA hit in headless and --on-captcha=skip — moving on "
+                  f"without this page")
+            return False, page
+
+        # Handing a solved CAPTCHA back to a headless browser only works if the
+        # ticket it writes outlives the browser that received it, and a
+        # non-persistent profile keeps that cookie in memory, where the relaunch
+        # destroys it. Say so once instead of looping through a swap that cannot
+        # carry anything.
+        if not PERSIST_PROFILE:
+            if not self._warned_no_profile:
+                print(f"  CAPTCHA hit in headless, but PERSIST_PROFILE is off — "
+                      f"the solve could not be carried back to a headless "
+                      f"browser, so this page is skipped. Turn PERSIST_PROFILE "
+                      f"on, or set HEADLESS = False to run with a window "
+                      f"throughout.")
+                self._warned_no_profile = True
+            return False, page
+
+        print(f"  CAPTCHA in headless — reopening with a window at {target[:90]}")
+        if not self._relaunch(headless=False):
+            return False, page
+
+        page = self._new_page()
+        page.goto(target, wait_until="domcontentloaded")
+        solved = self._await_solve(page, engine)
+        if not solved:
+            # Leave the run headed rather than dropping back: the next page is
+            # about to face the same challenge, and a window is what clears it.
+            print(f"  Staying headed — the challenge was not cleared")
+            return False, page
+
+        print(f"  Solved — returning to headless")
+        if not self._relaunch(headless=True):
+            return False, page
+
+        page = self._new_page()
+        page.goto(target, wait_until="domcontentloaded")
+        try:
+            # Deliberately not _wait_for_results: if the ticket did not carry
+            # over, that would detect the challenge again and recurse into
+            # another swap. One attempt, then hand the failure back.
+            page.wait_for_selector(engine.results_selector, timeout=20000)
+        except Exception:
+            print(f"  Headless still challenged after the solve — skipping this page")
+            return False, page
+
+        return True, page
 
     def fetch(self, url: str, engine=GOOGLE) -> str:
         """Fetch a single page using the persistent browser."""
@@ -302,14 +426,13 @@ class BrowserManager:
             if not self.start():
                 return None
 
-        page = self._context.new_page()
-        if STEALTH_AVAILABLE:
-            stealth_sync(page)
+        page = self._new_page()
 
         try:
-            page.set_default_timeout(0)
             page.goto(url, wait_until="domcontentloaded")
-            self._wait_for_page_ready(page, engine)
+            # A CAPTCHA handoff swaps the browser, so read the content off the
+            # page that comes back rather than the one opened above.
+            _, page = self._wait_for_page_ready(page, engine, resume_url=url)
             content = page.content()
             page.close()
             return content
@@ -336,17 +459,15 @@ class BrowserManager:
             if not self.start():
                 return set()
 
-        page = self._context.new_page()
-        if STEALTH_AVAILABLE:
-            stealth_sync(page)
+        page = self._new_page()
 
         all_links = set()
         consecutive_empty = 0
 
         try:
-            page.set_default_timeout(0)
             page.goto(start_url, wait_until="domcontentloaded")
-            if not self._wait_for_page_ready(page, engine):
+            ok, page = self._wait_for_page_ready(page, engine, resume_url=start_url)
+            if not ok:
                 print(f"  Could not load results for {start_url}")
                 return all_links
 
@@ -379,6 +500,13 @@ class BrowserManager:
                 print(f"  Waiting {delay:.1f}s before page {page_idx+2}...")
                 time.sleep(delay)
 
+                # The address of the page about to be opened, kept whichever way
+                # the turn is made. Clicking "Next" leaves nothing to resume
+                # from if a CAPTCHA swaps the browser here, but every engine can
+                # also express the same page as a URL, so pagination survives a
+                # handoff instead of restarting the keyword from page one.
+                next_url = engine.build_paginated_url(start_url, page_idx + 1)
+
                 # Move to the next page: click the engine's button, or open its URL.
                 if engine.next_selector:
                     next_btn = page.query_selector(engine.next_selector)
@@ -390,11 +518,11 @@ class BrowserManager:
                     next_btn.click()
                     page.wait_for_load_state("domcontentloaded")
                 else:
-                    next_url = engine.build_paginated_url(start_url, page_idx + 1)
                     print(f"  Opening page {page_idx+2}...")
                     page.goto(next_url, wait_until="domcontentloaded")
 
-                if not self._wait_for_page_ready(page, engine):
+                ok, page = self._wait_for_page_ready(page, engine, resume_url=next_url)
+                if not ok:
                     print(f"  Next page failed to load — stopping pagination")
                     break
 
@@ -427,3 +555,4 @@ class BrowserManager:
         self._context = None
         self._browser = None
         self._playwright = None
+        self._live_headless = None

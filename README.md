@@ -15,8 +15,10 @@
 - [Konfigurasi](#konfigurasi)
 - [Penggunaan](#penggunaan)
 - [Search Engine: Google, Bing & Yahoo](#search-engine-google-bing--yahoo)
+- [Pencarian per Negara (`--geo`)](#pencarian-per-negara---geo)
 - [File Input & Output](#file-input--output)
 - [Mode Fetching](#mode-fetching)
+- [Headless & CAPTCHA](#headless--captcha)
 - [Anti-Deteksi & Stealth](#anti-deteksi--stealth)
 - [Proxy & Autentikasi](#proxy--autentikasi)
 - [Google News RSS](#google-news-rss)
@@ -55,7 +57,9 @@
 | **Gabungan Semua Engine** | `--engine all` menjalankan Google → Yahoo → Bing berurutan, hasilnya digabung ke satu file `--output` |
 | **Tab Semua / Berita** | `--mode web` (tab Semua, default), `--mode nws` (tab Berita), `--mode both` (gabungan) — tab Semua menangkap portal baru yang belum diakui Google sebagai news site |
 | **Filter Berita** | `--news-filter` menjaga output hanya berisi artikel berita: `smart` (buang host non-berita + URL non-artikel), `strict` (hanya penerbit di `news_domains.txt`), `off` |
-| **CLI Flags** | `--engine`, `--input`, `--from`, `--until`, `--sort`, `--output`, `--max-pages`, `--proxy`, `--mode`, `--news-filter`, `--news-domains` |
+| **Pencarian per Negara** | `--geo my` / `--geo malaysia` — cari seolah-olah dari negara tertentu. Google dapat `gl=`, Bing `cc=`, Yahoo situs regionalnya. Lihat [Pencarian per Negara](#pencarian-per-negara---geo) |
+| **CLI Flags** | `--engine`, `--input`, `--from`, `--until`, `--sort`, `--geo`, `--output`, `--max-pages`, `--proxy`, `--mode`, `--news-filter`, `--news-domains`, `--headless`/`--headed`, `--on-captcha` |
+| **Headless + Jendela Saat Perlu** | Crawl jalan tanpa jendela; jendela hanya dibuka saat kena CAPTCHA, lalu balik headless dan **lanjut dari halaman yang sama**. `--on-captcha skip` untuk run terjadwal. Lihat [Headless & CAPTCHA](#headless--captcha) |
 | **Multi-mode Fetch** | `curl` (cepat), `playwright` (akurat), `auto` (fallback otomatis) |
 | **Browser Fingerprinting** | Menggunakan `browserforge` untuk generate fingerprint browser yang realistis |
 | **Stealth Mode** | `playwright-stealth` menyembunyikan tanda-tanda bot/automation |
@@ -113,11 +117,12 @@ Sejak refactor, `linktaker.py` (dulu 1 file ~1000 baris) sudah dipecah jadi pack
 | `url_utils.py` | Helper URL yang dipakai **semua** engine: strip AMP, filter social media, gerbang filter berita, validasi link | `config`, `news_filter` |
 | `news_filter.py` | Menjaga output hanya berisi **artikel berita**: blocklist domain non-berita, aturan bentuk URL artikel, allowlist penerbit, laporan penolakan | — |
 | `inputs.py` | Baca file keyword, `url.txt`, `proxies.txt`, `auth.json`, dan parsing tanggal CLI | `config` |
+| `geo.py` | Tabel negara ISO 3166-1 + alias (`uk`, `usa`, `jerman`, `singapura`) — mengubah isi `--geo` jadi satu objek `Geo` yang dipakai semua engine | — |
 | `engines/base.py` | Kontrak `Engine` — daftar field yang harus disediakan tiap engine | — |
-| `engines/google.py` | URL Google (`tbs=cdr`/`sbd`), paginasi `start=`, parsing link, objek `GOOGLE` | `url_utils`, `base` |
-| `engines/bing.py` | URL Bing (`filters=ez5`/`sortbydate`), paginasi `first=`, decode redirect `ck/a`, objek `BING` | `url_utils`, `base` |
-| `engines/yahoo.py` | URL Yahoo (`btf=`), paginasi `b=`, decode redirect `/RU=`, objek `YAHOO` | `url_utils`, `base` |
-| `engines/news_rss.py` | Decode/bangun/fetch Google News RSS | `config`, `deps`, `url_utils` |
+| `engines/google.py` | URL Google (`tbs=cdr`/`sbd`, `gl=`/`hl=`), paginasi `start=`, parsing link, objek `GOOGLE` | `url_utils`, `base` |
+| `engines/bing.py` | URL Bing (`filters=ez5`/`sortbydate`, `cc=`/`mkt=`), paginasi `first=`, decode redirect `ck/a`, objek `BING` | `url_utils`, `base` |
+| `engines/yahoo.py` | URL Yahoo (`btf=`, host regional per negara), paginasi `b=`, decode redirect `/RU=`, objek `YAHOO` | `url_utils`, `base` |
+| `engines/news_rss.py` | Decode/bangun/fetch Google News RSS (edisi mengikuti `--geo`) | `config`, `deps`, `geo`, `url_utils` |
 | `engines/__init__.py` | Registry `ENGINES` + `get_engine()` | Semua modul engine |
 | `browser.py` | `BrowserManager` — lifecycle browser Playwright, deteksi CAPTCHA, paginasi (klik "Next" atau navigasi URL, tergantung engine) | `config`, `deps`, `engines` |
 | `fetchers.py` | Fetch via `curl_cffi`/`cloudscraper`, orkestrasi per-URL (`process_one_url`) | `config`, `deps`, `browser`, `engines` |
@@ -201,6 +206,7 @@ Nilai default ada di [`linktaker/config.py`](linktaker/config.py). Sebagian besa
 | `DEFAULT_SORT` | `"relevance"` | Default `--sort` (`relevance` atau `latest`) |
 | `DEFAULT_ENGINE` | `"google"` | Default `--engine` (`google`, `bing`, atau `yahoo`) |
 | `NEWS_FILTER` | `"smart"` | Default `--news-filter` (`smart`, `strict`, atau `off`) — lihat [Filter Berita](#filter-berita-news-filter) |
+| `DEFAULT_GEO` | `None` | Default `--geo`. Isi kode negara (`"my"`) atau namanya (`"malaysia"`) kalau semua run memang menyasar satu negara. `None` = ikut lokasi browser — lihat [Pencarian per Negara](#pencarian-per-negara---geo) |
 | `WAIT_SEC` | `20` | Timeout request dalam detik |
 | `PARALLEL_WORKERS` | `5` | Jumlah thread paralel (mode `curl`/`auto`) |
 | `CONSECUTIVE_EMPTY_PAGES` | `2` | Stop setelah N halaman berturut-turut tanpa link baru |
@@ -259,6 +265,13 @@ Atau jalankan ketiganya sekaligus (Google → Yahoo → Bing) ke satu file outpu
 python linktaker.py --engine all --input keyword1.txt --from 2026-08-08 --until 2026-08-16 --sort latest --mode both --output hasil.txt
 ```
 
+Cari dari negara lain — kode ISO maupun nama negaranya, lihat [Pencarian per Negara](#pencarian-per-negara---geo):
+
+```bash
+python linktaker.py --input keyword1.txt --geo my
+python linktaker.py --input keyword1.txt --geo malaysia
+```
+
 Bisa juga dijalankan sebagai module:
 
 ```bash
@@ -274,12 +287,15 @@ python -m linktaker --input keyword1.txt
 | `--from YYYY-MM-DD` | tidak | — | Ambil hasil mulai tanggal ini. Tanpa `--from`/`--until`, pencarian jalan tanpa filter tanggal |
 | `--until YYYY-MM-DD` | tidak | — | Ambil hasil sampai tanggal ini |
 | `--sort {latest,relevance}` | tidak | `relevance` | `latest` = urut terbaru, `relevance` = urutan default engine. Lihat [catatan per engine](#search-engine-google-bing--yahoo) |
+| `--geo COUNTRY` | tidak | ikut lokasi browser | Cari seolah-olah dari negara ini. Terima kode ISO (`my`) maupun nama negara (`malaysia`, `jerman`). Lihat [Pencarian per Negara](#pencarian-per-negara---geo) |
 | `--output FILE` | tidak | `output.txt` | File tujuan hasil link |
 | `--max-pages N` | tidak | semua | Maksimum halaman hasil yang di-crawl per keyword |
 | `--proxy URL` | tidak | tanpa proxy | Proxy manual, mis. `http://user:password@proxycrawler.dashboard.nolimit.id:2570` |
 | `--mode {web,nws,both}` | tidak | `web` | `web` = tab **Semua/All**, `nws` = tab **Berita**, `both` = crawl kedua tab lalu digabung. Lihat [Tab pencarian](#tab-pencarian-semua-vs-berita) |
 | `--news-filter {smart,strict,off}` | tidak | `smart` | Seberapa ketat output disaring jadi link berita saja. Lihat [Filter Berita](#filter-berita-news-filter) |
 | `--news-domains FILE` | tidak | `news_domains.txt` | File allowlist penerbit, satu domain per baris |
+| `--headless` / `--headed` | tidak | `--headless` | Jalan tanpa / dengan jendela browser. Lihat [Headless & CAPTCHA](#headless--captcha) |
+| `--on-captcha {headed,skip}` | tidak | `headed` | Yang dilakukan run headless saat kena CAPTCHA. `skip` untuk run terjadwal |
 | `-h`, `--help` | — | — | Tampilkan bantuan |
 
 Contoh lengkap dengan proxy:
@@ -388,6 +404,76 @@ Hasil tetap diambil, hanya bagian yang tidak didukung itu saja yang diabaikan en
 
 ---
 
+## Pencarian per Negara (`--geo`)
+
+Secara default setiap engine menebak negara Anda dari IP dan cookie browser, jadi run dari
+Jakarta selalu dapat hasil versi Indonesia. `--geo` mengganti tebakan itu: engine diminta
+mencari **seolah-olah** permintaan datang dari negara yang Anda sebut.
+
+```bash
+# kode ISO
+python linktaker.py --input keyword1.txt --geo my
+
+# atau nama negaranya — bahasa Inggris maupun Indonesia
+python linktaker.py --input keyword1.txt --geo malaysia
+python linktaker.py --input keyword1.txt --geo jerman
+
+# semua engine sekaligus, satu negara
+python linktaker.py --engine all --input keyword1.txt --geo singapura --output hasil-sg.txt
+```
+
+### Cara Tiap Engine Menerimanya
+
+Tidak ada satu parameter yang berlaku di semua engine, jadi `--geo` diterjemahkan per engine:
+
+| Engine | Yang ditambahkan | Contoh untuk `--geo my` |
+|---|---|---|
+| **Google** | `gl=<kode>` (negara) + `hl=<bahasa>` (bahasa hasil) | `…/search?q=kpk&gl=my&hl=ms` |
+| **Bing** | `cc=<kode>` + `mkt=<bahasa>-<NEGARA>` | `…/search?q=kpk&cc=my&mkt=ms-MY` |
+| **Yahoo** | host regionalnya — Yahoo tidak punya parameter negara | `https://malaysia.search.yahoo.com/search?p=kpk` |
+| **Google News RSS** | `hl` / `gl` / `ceid` edisi negara itu | `…/rss/search?q=kpk&hl=ms&gl=MY&ceid=MY:ms` |
+
+Negara ikut terbawa saat paginasi, jadi halaman 2, 3, dan seterusnya tetap dari negara yang sama.
+
+### Format yang Diterima
+
+Isi `--geo` boleh salah satu dari:
+
+- **Kode ISO 3166-1 alpha-2** — `my`, `id`, `sg`, `de`. Huruf besar/kecil bebas
+- **Nama negara** — `malaysia`, `singapore`, `united states`
+- **Alias umum** — `uk` (→ `gb`), `usa`, `uae`, `south korea`
+- **Nama Indonesia** — `jerman`, `belanda`, `singapura`, `jepang`, `amerika serikat`, `arab saudi`
+
+Kalau isinya tidak dikenali, run berhenti sebelum pencarian dimulai dan menyebutkan kemungkinan yang dimaksud:
+
+```text
+linktaker.py: error: unknown country 'malaysa' — pass an ISO country code (my) or a country name (malaysia). Did you mean: Malaysia, Malta, Malawi?
+```
+
+Daftar lengkap negara dan aliasnya ada di `linktaker/geo.py`.
+
+### Catatan Penting
+
+- **`--geo` bukan proxy.** Ini mengubah negara yang *dicari*, bukan asal permintaannya — request tetap keluar dari IP Anda. Untuk hasil yang benar-benar seperti pengguna lokal, pasangkan dengan `--proxy` negara tersebut.
+- **Yahoo tidak punya properti untuk semua negara.** Kalau negara yang diminta tidak ada, Yahoo tetap memakai host defaultnya dan mencetak catatan — pakai `--engine google` atau `bing` untuk negara itu:
+
+  ```text
+  Note: Yahoo has no Greenland search property — crawling https://id.search.yahoo.com instead, so --geo has no effect here. Use --engine google or bing for Greenland.
+  ```
+
+- **Filter berita tetap berjalan seperti biasa.** `news_domains.txt` isinya penerbit Indonesia, jadi `--news-filter strict` akan membuang hampir semua hasil negara lain. Untuk crawl negara lain, pakai `--news-filter smart` (default) atau tambahkan penerbit negara itu ke allowlist.
+- **Header run mencantumkan negaranya**, supaya jelas hasil di `--output` itu dari mana:
+
+  ```text
+  Geolocation: Malaysia (my)
+    --geo sets the country the engine searches as, not where the request comes from — pair it with --proxy for a local IP
+  ```
+
+Kalau semua run memang selalu menyasar satu negara, isi `DEFAULT_GEO` di `linktaker/config.py`
+supaya tidak perlu mengetik `--geo` setiap kali.
+
+---
+
 ## File Input & Output
 
 ### File Keyword (Input — via `--input`)
@@ -472,6 +558,53 @@ Kredensial autentikasi dalam format JSON:
 - Jika tidak mendapat link, otomatis beralih ke Playwright
 - **Pro:** Keseimbangan antara kecepatan dan akurasi
 - **Kontra:** Sedikit lebih kompleks
+
+---
+
+## Headless & CAPTCHA
+
+Secara default browser jalan **tanpa jendela**. Jendela hanya dipinjam saat
+benar-benar dibutuhkan, yaitu ketika sebuah halaman kena CAPTCHA dan ada orang
+yang bisa menyelesaikannya.
+
+Chromium menetapkan headless saat launch dan Playwright tidak bisa mengubahnya
+pada browser yang sudah jalan, jadi pergantiannya dilakukan dengan menutup lalu
+membuka ulang **profil yang sama**. Ini hanya bisa bekerja karena
+`PERSIST_PROFILE` menyimpan cookie ke disk: tiket hasil solve CAPTCHA ikut
+terbawa ke browser headless berikutnya.
+
+Urutannya saat `--on-captcha headed` (default):
+
+1. Crawl jalan headless.
+2. Kena CAPTCHA di halaman N → browser ditutup, dibuka ulang **dengan jendela**
+   langsung di halaman N.
+3. Anda selesaikan CAPTCHA-nya (tunggu maksimal `CAPTCHA_WAIT_TIMEOUT`, default 120 detik).
+4. Browser ditutup lagi, dibuka ulang headless, dan **melanjutkan dari halaman N** —
+   bukan mengulang keyword dari halaman 1.
+
+| Situasi | Perintah |
+|---|---|
+| Ditunggui orang | `--headless --on-captcha headed` (default) |
+| Terjadwal / cron / systemd | `--headless --on-captcha skip` |
+| Debugging, mau lihat browsernya | `--headed` |
+
+**Catatan penting:**
+
+- `--on-captcha skip` adalah satu-satunya setelan yang masuk akal untuk run
+  terjadwal. Tidak ada yang menyelesaikan CAPTCHA jam 3 pagi, jadi menunggu
+  120 detik per halaman hanya menghabiskan jatah jadwal.
+- Kalau `PERSIST_PROFILE` dimatikan, hasil solve tidak bisa dibawa kembali ke
+  headless (cookie-nya ada di memori dan ikut mati saat browser ditutup).
+  Dalam kondisi itu halaman yang kena CAPTCHA akan dilewati, dan programnya
+  memberi tahu di awal run.
+- `--on-captcha headed` butuh satu browser pada satu waktu, jadi ia hanya
+  aktif di jalur sekuensial (`FETCH_MODE = "playwright"`, default). Pada jalur
+  paralel setelan ini otomatis turun ke `skip`.
+- Headless lebih mudah dikenali mesin pencari daripada headed. Kalau CAPTCHA
+  jadi jauh lebih sering sampai crawl bolak-balik relaunch, `--headed` justru
+  lebih cepat. Ukur dulu untuk keyword Anda, jangan diasumsikan.
+
+Untuk menjalankan ini otomatis di Linux, lihat [`deploy/INSTALL-LINUX.md`](deploy/INSTALL-LINUX.md).
 
 ---
 
@@ -567,6 +700,7 @@ Set `USE_GOOGLE_RSS = True` di konfigurasi.
 - Jumlah hasil terbatas (biasanya ~20–100 item)
 - URL decode mungkin gagal untuk beberapa format baru
 - Rentang tanggal `--from`/`--until` belum didukung RSS (hanya filter relatif `qdr:*`)
+- Edisi feed mengikuti `--geo` (`hl`/`gl`/`ceid`); tanpa `--geo`, edisi Indonesia yang dipakai
 
 ### Dukungan Filter Waktu
 
@@ -694,13 +828,13 @@ Hal ini memastikan output hanya berisi link artikel/website yang relevan.
 
 ## Menjalankan Tes
 
-Tes regresi berjalan **tanpa jaringan** — halaman hasil pencarian dipalsukan, lalu dicek apakah paginasi, decode redirect, penyaringan link, dan [filter berita](#filter-berita-news-filter) masih benar untuk ketiga engine:
+Tes regresi berjalan **tanpa jaringan** — halaman hasil pencarian dipalsukan, lalu dicek apakah paginasi, decode redirect, penyaringan link, [pencarian per negara](#pencarian-per-negara---geo), dan [filter berita](#filter-berita-news-filter) masih benar untuk ketiga engine:
 
 ```bash
 python tests/test_engines.py
 ```
 
-Keluaran berakhir dengan `ALL CHECKS PASSED` kalau semua beres. Jalankan ini setiap kali menyentuh `engines/`, `browser.py`, `fetchers.py`, atau `news_filter.py`.
+Keluaran berakhir dengan `ALL CHECKS PASSED` kalau semua beres. Jalankan ini setiap kali menyentuh `engines/`, `browser.py`, `fetchers.py`, `geo.py`, atau `news_filter.py`.
 
 ---
 

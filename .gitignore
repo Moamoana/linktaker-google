@@ -1,9 +1,9 @@
 # Input/output data — keyword lists, crawl results, proxy lists
 *.txt
 
+
 # ...except the dependency list, which belongs in the repo
 !requirements.txt
-!news_domains.txt
 
 __pycache__/
 
@@ -11,3 +11,8 @@ __pycache__/
 # and the profile holds live Google cookies.
 .browser_profile/
 .fingerprint.json
+
+# Artefak dari deploy/run-linktaker.sh
+logs/
+hasil/
+.linktaker.lock

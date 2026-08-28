@@ -21,6 +21,21 @@ YAHOO_BAD_NETLOC = ("search.yahoo.com", "ads.yahoo.com", "beap.gemini.yahoo.com"
 RESULTS_PER_PAGE = 10
 YAHOO_SEARCH_HOST = "https://id.search.yahoo.com"
 
+# Yahoo has no country parameter: the region *is* the hostname. Most are the
+# ISO code, but enough are not (Malaysia spells its out, the US and Canada use
+# words) that the exceptions have to be listed. A country absent from here has
+# no Yahoo property of its own — `regional_host` says so rather than inventing
+# a subdomain that resolves to nothing.
+YAHOO_REGION_SUBDOMAINS = {
+    "my": "malaysia", "us": "www", "ca": "ca", "gb": "uk", "ae": "maktoob",
+    "id": "id", "sg": "sg", "ph": "ph", "th": "th", "vn": "vn", "tw": "tw",
+    "hk": "hk", "in": "in", "au": "au", "nz": "nz", "ie": "ie", "de": "de",
+    "at": "at", "ch": "ch", "fr": "fr", "es": "es", "it": "it", "nl": "nl",
+    "be": "be", "se": "se", "dk": "dk", "no": "no", "fi": "fi", "pl": "pl",
+    "ro": "ro", "gr": "gr", "tr": "tr", "ru": "ru", "br": "br", "mx": "mx",
+    "ar": "ar", "cl": "cl", "co": "co", "pe": "pe", "ve": "ve", "za": "za",
+}
+
 # Organic results only — Yahoo keeps ads outside `div.algo`.
 YAHOO_LINK_SELECTORS = (
     "div.algo div.compTitle a[href]",
@@ -54,13 +69,32 @@ def relative_time_filter(date_from: date = None, date_until: date = None, today:
     return None
 
 
+def regional_host(geo=None) -> str:
+    """The Yahoo search host to crawl for a country, or the default for None.
+
+    Returns None when the country has no Yahoo property, so the caller can say
+    so instead of falling back silently to a different country's results.
+    """
+    if geo is None:
+        return YAHOO_SEARCH_HOST
+
+    subdomain = YAHOO_REGION_SUBDOMAINS.get(geo.code)
+    if not subdomain:
+        return None
+    return f"https://{subdomain}.search.yahoo.com"
+
+
 def build_yahoo_search_url(keyword: str, date_from: date = None, date_until: date = None,
-                           sort: str = "relevance", mode: str = "web") -> str:
+                           sort: str = "relevance", mode: str = "web", geo=None) -> str:
     """Build a Yahoo search URL for one keyword.
 
     Only Yahoo's web index is used: `news.search.yahoo.com` is unreachable and
     Yahoo web search exposes neither a custom date range nor date ordering.
     `capability_notes()` spells out what the engine drops.
+
+    geo: a `geo.Geo` (from --geo) or None. Yahoo has no country parameter — each
+    region is a separate host — so this picks the host. A country Yahoo has no
+    property for keeps the default host; `capability_notes()` reports that.
     """
     params = {"p": keyword.strip()}
 
@@ -68,7 +102,8 @@ def build_yahoo_search_url(keyword: str, date_from: date = None, date_until: dat
     if btf:
         params["btf"] = btf
 
-    return YAHOO_SEARCH_HOST + "/search?" + urlencode(params, quote_via=quote_plus)
+    host = regional_host(geo) or YAHOO_SEARCH_HOST
+    return host + "/search?" + urlencode(params, quote_via=quote_plus)
 
 
 def build_yahoo_paginated_url(base_url: str, page_index: int) -> str:
@@ -127,9 +162,14 @@ def extract_yahoo_links(html_content: str) -> set:
 
 
 def capability_notes(mode: str, sort: str, date_from: date = None,
-                     date_until: date = None) -> list:
+                     date_until: date = None, geo=None) -> list:
     """Say plainly which parts of the request Yahoo cannot honour."""
     notes = []
+
+    if geo and not regional_host(geo):
+        notes.append(f"Note: Yahoo has no {geo.name} search property — crawling "
+                     f"{YAHOO_SEARCH_HOST} instead, so --geo has no effect here. "
+                     f"Use --engine google or bing for {geo.name}.")
 
     if mode in ("nws", "both"):
         notes.append("Note: Yahoo News search is not supported — "

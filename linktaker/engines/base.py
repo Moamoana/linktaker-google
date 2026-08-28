@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 
-def no_notes(mode: str, sort: str, date_from=None, date_until=None) -> list:
+def no_notes(mode: str, sort: str, date_from=None, date_until=None, geo=None) -> list:
     """Default for engines that can honour every request as asked."""
     return []
 
@@ -24,13 +24,13 @@ class Engine:
 
     name: str
     default_mode: str                 # vertical used when --mode is not given
-    build_search_url: Callable        # (keyword, date_from, date_until, sort, mode) -> url
+    build_search_url: Callable        # (keyword, date_from, date_until, sort, mode, geo) -> url
     build_paginated_url: Callable     # (search_url, page_index) -> url
     extract_links: Callable           # (html) -> set of links
     results_selector: str             # results are on screen once this matches
     captcha_selector: str             # CSS that marks a CAPTCHA / challenge page
     captcha_url_markers: tuple        # URL fragments that mean "challenge page"
-    capability_notes: Callable = no_notes  # (mode, sort, date_from, date_until) -> notes
+    capability_notes: Callable = no_notes  # (mode, sort, date_from, date_until, geo) -> notes
     next_selector: str = None         # click to paginate; None = navigate by URL
     captcha_text_markers: tuple = ()  # visible text that marks a challenge page
 

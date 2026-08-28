@@ -1,6 +1,6 @@
 # Runtime dependencies for linktaker.py
 # Install the Playwright browser after installing this file:
-#   playwright install chromium
+# playwright install chromium
 
 beautifulsoup4==4.14.3
 browserforge==1.2.4

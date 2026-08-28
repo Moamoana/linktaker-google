@@ -1,0 +1,7 @@
+# Script dan unit systemd dieksekusi di Linux — CRLF membuat shebang gagal
+# dengan "bad interpreter", jadi line ending dipaksa LF apa pun platform
+# tempat repo ini di-clone.
+*.sh            text eol=lf
+*.service       text eol=lf
+*.timer         text eol=lf
+*.py            text eol=lf

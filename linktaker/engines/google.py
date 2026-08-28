@@ -63,11 +63,17 @@ def build_tbs(date_from: date = None, date_until: date = None, sort: str = "rele
 
 
 def build_google_search_url(keyword: str, date_from: date = None, date_until: date = None,
-                            sort: str = "relevance", mode: str = "web") -> str:
+                            sort: str = "relevance", mode: str = "web", geo=None) -> str:
     """Build a Google search URL for one keyword.
 
     mode: "web" for the All tab (Google's default vertical), "nws" for the News
     tab. Both accept the same `tbs` date range, so --from/--until work either way.
+
+    geo: a `geo.Geo` (from --geo) or None. It becomes `gl=<code>`, the country
+    Google should search as if the request came from — the same knob as picking
+    a region in Google's own search settings. `hl` rides along so the results
+    page comes back in that country's language rather than the browser profile's,
+    which is what makes the local publishers rank where a local user sees them.
     """
     params = {"q": keyword.strip()}
     if mode == "nws":
@@ -76,6 +82,10 @@ def build_google_search_url(keyword: str, date_from: date = None, date_until: da
     tbs = build_tbs(date_from, date_until, sort)
     if tbs:
         params["tbs"] = tbs
+
+    if geo:
+        params["gl"] = geo.code
+        params["hl"] = geo.language
 
     return "https://www.google.com/search?" + urlencode(params, quote_via=quote_plus)
 
@@ -181,7 +191,7 @@ def extract_google_links(html_content: str) -> set:
 
 
 def capability_notes(mode: str, sort: str, date_from: date = None,
-                     date_until: date = None) -> list:
+                     date_until: date = None, geo=None) -> list:
     """Point out what the News tab leaves out, since that is why --mode exists."""
     # The News tab stopped being scrapeable: its result anchors are all
     # `/goto?url=<encrypted blob>`, and unlike the All tab it embeds no

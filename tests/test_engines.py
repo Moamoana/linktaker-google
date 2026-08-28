@@ -208,6 +208,72 @@ assert unwrap_google_redirect("https://x.example.com/a") == "https://x.example.c
 assert unwrap_google_redirect("/url?sa=t&nothing=here") == ""
 print("  all/news tab URLs, default mode, and /url?q= unwrapping OK")
 
+print("\n=== GEO: --geo resolution (issue #17) ===")
+from linktaker import geo
+from linktaker.engines.bing import build_bing_search_url
+from linktaker.engines.yahoo import build_yahoo_search_url, regional_host
+
+# A code, a name, the same name capitalised, and the Indonesian name all land
+# on one country — that is the whole point of resolving before building a URL.
+for typed in ("my", "MY", "malaysia", "Malaysia", " Malaysia "):
+    assert geo.resolve(typed).code == "my", typed
+assert geo.resolve("jerman").code == "de"      # Indonesian name
+assert geo.resolve("uk").code == "gb"          # shorthand, not the ISO code
+assert geo.resolve("timor-leste").code == "tl"  # hyphen folded to a space
+assert geo.resolve("is").code == "is"          # a code that reads like a word
+assert str(geo.resolve("my")) == "Malaysia (my)"
+
+# An unusable --geo has to be rejected, and a near miss has to say what was meant.
+for bad in ("", "zz", "narnia"):
+    try:
+        geo.resolve(bad)
+        raise AssertionError(f"{bad!r} should not resolve")
+    except ValueError:
+        pass
+assert "Malaysia" in geo.suggest("malaysa")
+try:
+    geo.resolve("malaysa")
+except ValueError as e:
+    assert "Did you mean" in str(e) and "Malaysia" in str(e)
+
+# Chinese carries its own region tag, so the market/edition tags must not
+# double it up into zh-CN-CN.
+assert geo.resolve("cn").market == "zh-CN" and geo.resolve("cn").ceid == "CN:zh-CN"
+assert geo.resolve("my").market == "ms-MY" and geo.resolve("my").ceid == "MY:ms"
+print("  codes, names, aliases, suggestions and market/edition tags OK")
+
+print("\n=== GEO: every engine spends it its own way ===")
+MY = geo.resolve("malaysia")
+
+g = params(build_google_search_url("kpk", None, None, "relevance", "web", MY))
+assert g["gl"] == "my" and g["hl"] == "ms"          # the issue's &gl=my
+assert "gl" not in params(build_google_search_url("kpk"))   # absent without --geo
+
+b = params(build_bing_search_url("kpk", None, None, "relevance", "web", MY))
+assert b["cc"] == "my" and b["mkt"] == "ms-MY"
+assert "cc" not in params(build_bing_search_url("kpk"))
+
+# Yahoo has no country parameter — the region is the host.
+assert build_yahoo_search_url("kpk", geo=MY).startswith("https://malaysia.search.yahoo.com/")
+assert build_yahoo_search_url("kpk").startswith("https://id.search.yahoo.com/")
+
+# The country has to survive pagination, or only page 1 is localised.
+for engine, page2 in ((GOOGLE, "start=10"), (BING, "first=11"), (YAHOO, "b=11")):
+    url = engine.build_search_url("kpk", None, None, "relevance", "web", MY)
+    paged = engine.build_paginated_url(url, 1)
+    assert page2 in paged, (engine.name, paged)
+    marker = "malaysia.search.yahoo.com" if engine is YAHOO else "my"
+    assert marker in paged, (engine.name, paged)
+
+# A country with no Yahoo property keeps the default host and says so, rather
+# than inventing gl.search.yahoo.com and quietly returning nothing.
+GL = geo.resolve("greenland")
+assert regional_host(GL) is None
+assert build_yahoo_search_url("kpk", geo=GL).startswith("https://id.search.yahoo.com/")
+assert any("Greenland" in n for n in YAHOO.capability_notes("web", "relevance", None, None, GL))
+assert GOOGLE.capability_notes("web", "relevance", None, None, GL) == []
+print("  gl=/cc=/regional host, pagination, and the missing-property note OK")
+
 print("\n=== NEWS FILTER: only news articles reach the output ===")
 from linktaker import news_filter
 from linktaker.news_filter import is_news_url, looks_like_article, registrable_domain
@@ -273,5 +339,105 @@ print("  gate wiring and rejection counters OK")
 
 # Leave the module on its default so an importing run is not affected.
 news_filter.configure("smart")
+
+
+# --------------------------------------------------------------------------
+# CAPTCHA handoff (issue #6): headless by default, a window only when one is
+# actually needed, and pagination picking up where it stopped rather than at
+# page one.
+# --------------------------------------------------------------------------
+print("\n=== CAPTCHA: headless borrows a window, then resumes (issue #6) ===")
+
+from linktaker import browser as browser_mod
+
+
+class HandoffPage(FakePage):
+    """A Bing result set whose page 2 is challenged until someone clears it.
+
+    The challenge only lifts while a window is open, which is what makes the
+    handoff observable: a run that never opens one never gets past page 2.
+    """
+
+    def __init__(self, engine, total_pages, state):
+        super().__init__(engine, total_pages)
+        self.state = state
+
+    def _blocked(self):
+        return self.idx == 1 and not self.state["solved"]
+
+    def wait_for_selector(self, sel, timeout=None):
+        if self._blocked():
+            if self.state["headed"]:
+                self.state["solved"] = True     # a human clears it in the window
+                return
+            raise RuntimeError("challenge page")
+        super().wait_for_selector(sel, timeout)
+
+    def query_selector_all(self, sel):
+        return [] if self._blocked() else super().query_selector_all(sel)
+
+    def query_selector(self, sel):
+        if self._blocked() and "challenge" in sel:
+            return FakeElement(self)            # marks the page as a challenge
+        return super().query_selector(sel)
+
+    def content(self):
+        return "" if self._blocked() else super().content()
+
+
+def run_handoff(on_captcha):
+    state = {"solved": False, "headed": False, "relaunches": []}
+    page = HandoffPage(BING, 3, state)
+    mgr = BrowserManager(headless=True, on_captcha=on_captcha)
+    mgr._context = FakeContext(page)
+    mgr._live_headless = True                   # as if start() had launched headless
+
+    def fake_relaunch(headless):
+        # Stands in for the stop/start of a real Chromium; records the swap.
+        state["relaunches"].append("headless" if headless else "headed")
+        state["headed"] = not headless
+        mgr._live_headless = headless
+        return True
+
+    mgr._relaunch = fake_relaunch
+
+    slept = browser_mod.time.sleep
+    browser_mod.time.sleep = lambda s: None      # skip page and cooldown delays
+    try:
+        links = mgr.browse_and_paginate("https://start", 3, 2, BING)
+    finally:
+        browser_mod.time.sleep = slept
+    return links, page.visited, state
+
+
+links, visited, state = run_handoff("headed")
+print("navigation:", visited)
+print("relaunches:", state["relaunches"])
+
+# One round trip: out to a window for the challenge, straight back to headless.
+assert state["relaunches"] == ["headed", "headless"], state["relaunches"]
+assert state["solved"]
+
+# The whole point: it resumed at the page that stalled, not back at page 1.
+# first=11 is visited three times — the original turn, the headed retry, and the
+# headless retry after the solve — while page 1 is never opened again.
+assert visited.count("https://start?first=11") == 3, visited
+assert visited.count("https://start") == 1, visited
+# ...and the walk carried on past the challenged page.
+assert "https://start?first=21" in visited, visited
+
+# Page 2 was actually harvested once the challenge cleared, and page 3 followed,
+# so the handoff neither dropped a page nor ended the walk.
+assert any("bsite1." in l for l in links), sorted(links)
+assert any("bsite2." in l for l in links), sorted(links)
+print("  headed handoff, resume-in-place, and continued pagination OK")
+
+# skip is what an unattended run uses: no window, no waiting, just stop there.
+links, visited, state = run_handoff("skip")
+assert state["relaunches"] == [], state["relaunches"]
+assert not state["solved"]
+assert any("bsite0." in l for l in links), sorted(links)     # page 1 still kept
+assert not any("bsite1." in l for l in links), sorted(links)  # challenged page dropped
+print("  --on-captcha skip stops without opening a window OK")
 
 print("\nALL CHECKS PASSED")

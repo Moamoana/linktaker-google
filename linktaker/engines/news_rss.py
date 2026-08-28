@@ -5,6 +5,7 @@ from urllib.parse import urlparse, parse_qs, urlencode
 
 import curl_cffi.requests as requests
 
+from .. import geo
 from ..config import RSS_DECODE_DELAY
 from ..deps import FEEDPARSER_AVAILABLE, feedparser
 from ..url_utils import is_valid_result_url
@@ -83,7 +84,22 @@ def build_google_news_rss_url(search_url: str) -> str:
     # Build RSS URL
     # tbs=qdr:w means past week, etc.
     tbs = q.get("tbs", [""])[0]
-    params = {"q": query, "hl": "id", "gl": "ID", "ceid": "ID:id"}
+
+    # The feed picks its edition from hl/gl/ceid. --geo already wrote gl into the
+    # search URL, so read it back rather than pinning Indonesia the way this did
+    # before --geo existed; without it the Indonesian edition stays the default.
+    # A hand-written url.txt can carry any gl at all, so an unreadable one falls
+    # back rather than taking the run down over a feed that is optional anyway.
+    edition = geo.Geo(code="id", name="Indonesia", language="id")
+    country = q.get("gl", [""])[0]
+    if country:
+        try:
+            edition = geo.resolve(country)
+        except ValueError:
+            pass
+
+    params = {"q": query, "hl": edition.language, "gl": edition.upper,
+              "ceid": edition.ceid}
 
     # Map time filter
     if "qdr:h" in tbs:

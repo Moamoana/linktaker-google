@@ -14,6 +14,10 @@ DEFAULT_ENGINE = "google"            # default for --engine ("google" or "bing")
 # non-article URLs but still lets an unknown portal through; "strict" admits
 # only NEWS_DOMAINS_FILE; "off" is the old behaviour. See news_filter.py.
 NEWS_FILTER = "smart"                # default for --news-filter
+# Which country's results to ask for — the default for --geo. An ISO country
+# code ("my") or a country name ("malaysia"); None searches from wherever the
+# browser appears to be, which is the old behaviour. See geo.py.
+DEFAULT_GEO = None
 # --mode default is "web" (the All tab) for every engine; "nws" searches the news
 # tab instead, "both" crawls the two and merges the links.
 WAIT_SEC = 20
@@ -32,6 +36,20 @@ RSS_DECODE_DELAY = 2  # seconds between decoding RSS redirect URLs to avoid rate
 
 # CAPTCHA wait timeout in seconds (how long to wait for user to solve CAPTCHA)
 CAPTCHA_WAIT_TIMEOUT = 120
+
+# Run the browser without a visible window. Chromium fixes this at launch and
+# Playwright cannot flip it on a live browser, so a run that needs a window for
+# one CAPTCHA gets it by relaunching — see ON_CAPTCHA and browser.py.
+HEADLESS = True
+
+# What to do when a headless run hits a challenge page:
+#   "headed" — close the headless browser, reopen the same profile with a
+#              window at the same result page, wait for a human, then go back
+#              to headless and resume where it left off.
+#   "skip"   — give up on that page and move on. The only useful setting for an
+#              unattended run (cron, systemd timer): nobody is there to solve it,
+#              so waiting CAPTCHA_WAIT_TIMEOUT per page just burns the schedule.
+ON_CAPTCHA = "headed"
 
 # ---------------- CAPTCHA avoidance ----------------
 # The settings below exist for one reason: getting challenged less often. None
@@ -54,8 +72,8 @@ FINGERPRINT_FILE = ".fingerprint.json"
 # Jitter between result pages within one keyword. Previously "Next" was clicked
 # the instant the page finished loading — ten pages in fifteen seconds, which no
 # human produces.
-PAGE_DELAY_MIN = 0
-PAGE_DELAY_MAX = 0
+PAGE_DELAY_MIN = 4
+PAGE_DELAY_MAX = 8
 
 # Pause after a solved CAPTCHA before touching the next page. Resuming at full
 # speed right after a challenge tends to earn the next one immediately.

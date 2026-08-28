@@ -35,7 +35,7 @@ def epoch_days(day: date) -> int:
 
 
 def build_bing_search_url(keyword: str, date_from: date = None, date_until: date = None,
-                          sort: str = "relevance", mode: str = "web") -> str:
+                          sort: str = "relevance", mode: str = "web", geo=None) -> str:
     """Build a Bing search URL for one keyword.
 
     mode: "web" for Bing Search, "nws" for Bing News.
@@ -44,9 +44,16 @@ def build_bing_search_url(keyword: str, date_from: date = None, date_until: date
     custom date range (`filters=ex1:"ez5_<from>_<until>"`), while only Bing News
     can order results by date (`qft=sortbydate="1"`). `capability_notes()` reports
     whichever half the chosen vertical cannot honour.
+
+    geo: a `geo.Geo` (from --geo) or None. Bing spells the country `cc=` and
+    pairs it with a market, `mkt=<lang>-<COUNTRY>` — Google's `gl` equivalent,
+    covering both verticals.
     """
     path = "/news/search" if mode == "nws" else "/search"
     params = {"q": keyword.strip()}
+    if geo:
+        params["cc"] = geo.code
+        params["mkt"] = geo.market
 
     extra = ""
     if mode == "nws":
@@ -117,7 +124,7 @@ def extract_bing_links(html_content: str) -> set:
 
 
 def capability_notes(mode: str, sort: str, date_from: date = None,
-                     date_until: date = None) -> list:
+                     date_until: date = None, geo=None) -> list:
     """Warn about the half of the request the chosen Bing vertical cannot serve."""
     notes = []
     if mode == "both":

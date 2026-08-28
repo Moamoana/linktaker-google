@@ -5,14 +5,15 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from . import news_filter
+from . import geo, news_filter
 from .browser import BrowserManager, reset_profile
 from .config import (
     KEYWORDS_FILE, URLS_FILE, PROXIES_FILE, OUT_FILE, NEWS_DOMAINS_FILE,
     MAX_PAGES_PER_SEARCH, DEFAULT_SORT, DEFAULT_ENGINE, NEWS_FILTER,
     FETCH_MODE, USE_GOOGLE_RSS, RSS_DECODE_DELAY,
     USE_CLOUDFLARE_BYPASS, PARALLEL_WORKERS, SOCIAL_MEDIA_DOMAINS,
-    PERSIST_PROFILE, BROWSER_PROFILE_DIR,
+    PERSIST_PROFILE, BROWSER_PROFILE_DIR, DEFAULT_GEO,
+    HEADLESS, ON_CAPTCHA, CAPTCHA_WAIT_TIMEOUT,
 )
 from .deps import CLOUDSCRAPER_AVAILABLE, STEALTH_AVAILABLE, BROWSERFORGE_AVAILABLE, PLAYWRIGHT_AVAILABLE
 from .engines import ENGINES, MODE_LABELS, SEARCH_MODES, expand_mode, get_engine
@@ -33,8 +34,19 @@ EXAMPLE = """example:
   # news only, allowlisted publishers exclusively (bing and yahoo need this most)
   python linktaker.py --engine bing --input keyword1.txt --news-filter strict
 
+  # search as if from another country — a code or the country's name
+  python linktaker.py --input keyword1.txt --geo my
+  python linktaker.py --input keyword1.txt --geo malaysia
+  python linktaker.py --engine all --input keyword1.txt --geo singapura
+
   # run google, yahoo and bing back to back into one merged output file
   python linktaker.py --engine all --input keyword1.txt --from 2026-08-18 --until 2026-08-24 --sort latest --mode both --output hasil.txt
+
+  # unattended (cron, systemd): no window at all, challenged pages dropped
+  python linktaker.py --input keyword1.txt --headless --on-captcha skip
+
+  # attended: no window until a CAPTCHA needs one, then straight back to headless
+  python linktaker.py --input keyword1.txt --headless --on-captcha headed
 """
 
 
@@ -78,6 +90,13 @@ def build_parser():
         help=f"result ordering (default: {DEFAULT_SORT})",
     )
     parser.add_argument(
+        "--geo", metavar="COUNTRY", default=DEFAULT_GEO,
+        help="search as if from this country — an ISO country code (my) or a "
+             "country name (malaysia, jerman). Google gets gl=, Bing cc=, and "
+             "Yahoo its regional site "
+             f"(default: {DEFAULT_GEO or 'wherever the browser appears to be'})",
+    )
+    parser.add_argument(
         "--output", metavar="FILE", default=OUT_FILE,
         help=f"file to write the collected links to (default: {OUT_FILE})",
     )
@@ -96,6 +115,24 @@ def build_parser():
              f"starting, so the run begins from a clean browser. Use this when "
              f"the saved profile itself has been flagged and every search is "
              f"landing on a CAPTCHA",
+    )
+    parser.add_argument(
+        "--headless", dest="headless", action="store_true", default=HEADLESS,
+        help=f"run the browser without a window "
+             f"(default: {'headless' if HEADLESS else 'headed'})",
+    )
+    parser.add_argument(
+        "--headed", "--no-headless", dest="headless", action="store_false",
+        help="run with a visible browser window throughout",
+    )
+    parser.add_argument(
+        "--on-captcha", "--on_captcha", dest="on_captcha",
+        choices=("headed", "skip"), default=ON_CAPTCHA,
+        help=f"what a headless run does at a challenge page: headed = reopen "
+             f"the same profile with a window at that result page, wait for a "
+             f"human, then go back to headless and carry on; skip = drop the "
+             f"page and move on, which is the setting an unattended run wants "
+             f"(default: {ON_CAPTCHA})",
     )
     parser.add_argument(
         "--mode", choices=SEARCH_MODES, default=None,
@@ -131,6 +168,12 @@ def parse_args(argv=None):
         args.engine = get_engine(args.engine)
         if args.mode is None:
             args.mode = args.engine.default_mode
+
+    if args.geo:
+        try:
+            args.geo = geo.resolve(args.geo)
+        except ValueError as e:
+            parser.error(str(e))
 
     if args.date_from:
         try:
@@ -169,7 +212,7 @@ def build_urls(args, engine, mode):
         for kw in keywords:
             for m in expand_mode(mode):
                 url = engine.build_search_url(kw, args.date_from, args.date_until,
-                                               args.sort, m)
+                                               args.sort, m, args.geo)
                 # Yahoo builds the same URL for either vertical — crawl it once.
                 if url not in urls:
                     urls.append(url)
@@ -208,9 +251,18 @@ def describe_run(args, engine, mode, url_count):
         date_range = "any date"
 
     pages = "all" if args.max_pages is None else str(args.max_pages)
+    region = str(args.geo) if args.geo else "not set"
     print(f"Processing {url_count} search(es) on {engine.name} "
           f"— fetch mode: {FETCH_MODE}, search: {MODE_LABELS.get(mode, mode)}")
     print(f"Date: {date_range} | Sort: {args.sort} | Max pages: {pages} | Output: {args.output}")
+    print(f"Geolocation: {region}")
+
+    if args.geo:
+        # Worth being explicit: this asks the engine for another country's
+        # results, it does not move the request there. A run from Jakarta still
+        # leaves from Jakarta unless --proxy sends it somewhere else.
+        print("  --geo sets the country the engine searches as, not where the "
+              "request comes from — pair it with --proxy for a local IP")
 
     if args.news_filter == "off":
         print("News filter: OFF — every non-social link is kept, including "
@@ -226,11 +278,28 @@ def describe_run(args, engine, mode, url_count):
         print("Browser profile: fresh each run (PERSIST_PROFILE is off) — "
               "expect a challenge on the first search")
 
+    if args.headless:
+        if args.on_captcha == "headed":
+            print(f"Browser window: headless, borrowing a window per CAPTCHA "
+                  f"(waits up to {CAPTCHA_WAIT_TIMEOUT}s for a human, then "
+                  f"resumes headless at the same result page)")
+            if not PERSIST_PROFILE:
+                # The swap can only carry a solve through the cookie jar on disk.
+                print("  PERSIST_PROFILE is off, so a solved CAPTCHA cannot be "
+                      "carried back into headless — challenged pages will be "
+                      "skipped. Use --headed for an attended run.")
+        else:
+            print("Browser window: headless, challenged pages are skipped "
+                  "(--on-captcha skip) — the right setting when no one is watching")
+    else:
+        print("Browser window: headed throughout")
+
     if args.max_pages is None:
         print("Max pages: all — crawling deep into the result set is the biggest "
               "remaining CAPTCHA trigger; --max-pages 5 cuts it sharply")
 
-    for note in engine.capability_notes(mode, args.sort, args.date_from, args.date_until):
+    for note in engine.capability_notes(mode, args.sort, args.date_from,
+                                        args.date_until, args.geo):
         print(note)
 
 
@@ -270,7 +339,20 @@ def crawl_engine(args, engine, mode):
     browser_mgr = None
     if FETCH_MODE in ("auto", "playwright") and PLAYWRIGHT_AVAILABLE:
         proxy = random.choice(proxies) if proxies else None
-        browser_mgr = BrowserManager(proxy=proxy)
+        # The handoff stops and restarts the shared browser. On the threaded
+        # path that would pull the context out from under every other worker
+        # mid-fetch, and Chromium would refuse the relaunch anyway while the
+        # others still hold the profile's single-instance lock. Only the
+        # sequential path can afford it.
+        on_captcha = args.on_captcha
+        if FETCH_MODE != "playwright" and on_captcha == "headed" \
+                and min(PARALLEL_WORKERS, len(urls)) > 1:
+            print("Note: --on-captcha headed needs one browser at a time — "
+                  "using skip for this parallel run (FETCH_MODE=playwright "
+                  "runs sequentially and supports it)")
+            on_captcha = "skip"
+        browser_mgr = BrowserManager(proxy=proxy, headless=args.headless,
+                                     on_captcha=on_captcha)
         # Lazy start — only launches when first needed
         print(f"Persistent browser: READY (will launch on first use)")
 
