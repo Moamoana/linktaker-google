@@ -24,7 +24,6 @@
 - [Google News RSS](#google-news-rss)
 - [Filter Berita (News Filter)](#filter-berita-news-filter)
 - [Filter Social Media](#filter-social-media)
-- [Menjalankan Tes](#menjalankan-tes)
 - [Troubleshooting](#troubleshooting)
 - [Lisensi](#lisensi)
 
@@ -137,7 +136,7 @@ Sejak refactor, `linktaker.py` (dulu 1 file ~1000 baris) sudah dipecah jadi pack
 > 1. Bikin `linktaker/engines/duckduckgo.py` meniru bentuk `bing.py` — URL builder, paginasi, parser link — lalu tutup dengan objek `Engine(...)` di bagian bawah file.
 > 2. Tambahkan objek itu ke tuple di `linktaker/engines/__init__.py`.
 >
-> `--engine` otomatis menerima nama barunya, dan `fetchers.py`/`browser.py` tidak perlu disentuh sama sekali. Jalankan `python tests/test_engines.py` untuk memastikan tidak ada yang putus.
+> `--engine` otomatis menerima nama barunya, dan `fetchers.py`/`browser.py` tidak perlu disentuh sama sekali.
 
 ---
 
@@ -826,18 +825,6 @@ Hal ini memastikan output hanya berisi link artikel/website yang relevan.
 
 ---
 
-## Menjalankan Tes
-
-Tes regresi berjalan **tanpa jaringan** — halaman hasil pencarian dipalsukan, lalu dicek apakah paginasi, decode redirect, penyaringan link, [pencarian per negara](#pencarian-per-negara---geo), dan [filter berita](#filter-berita-news-filter) masih benar untuk ketiga engine:
-
-```bash
-python tests/test_engines.py
-```
-
-Keluaran berakhir dengan `ALL CHECKS PASSED` kalau semua beres. Jalankan ini setiap kali menyentuh `engines/`, `browser.py`, `fetchers.py`, `geo.py`, atau `news_filter.py`.
-
----
-
 ## Troubleshooting
 
 ### `Input file not found`
@@ -920,6 +907,7 @@ linktaker-google/
 │   ├── inputs.py         # Baca keyword/url.txt/proxies.txt/auth.json + parsing tanggal
 │   ├── url_utils.py      # Helper URL untuk semua engine (AMP, sosmed, validasi)
 │   ├── news_filter.py    # Gerbang berita: blocklist, bentuk URL artikel, allowlist
+│   ├── geo.py            # Resolusi --geo: kode ISO/nama negara -> objek Geo
 │   └── engines/          # Satu file per search engine
 │       ├── __init__.py   # Registry ENGINES + get_engine()
 │       ├── base.py       # Kontrak Engine
@@ -927,10 +915,13 @@ linktaker-google/
 │       ├── bing.py       # Bing Search / Bing News
 │       ├── yahoo.py      # Yahoo Search
 │       └── news_rss.py   # Google News RSS (opsional)
-├── tests/
-│   └── test_engines.py  # Tes regresi 3 engine, tanpa jaringan
+├── deploy/              # Jadwal otomatis di Linux (systemd timer + runner)
+│   ├── run-linktaker.sh
+│   ├── linktaker.service
+│   ├── linktaker.timer
+│   └── INSTALL-LINUX.md
 ├── requirements.txt     # Daftar dependencies Python
-├── news_domains.txt     # Allowlist penerbit berita — default `--news-domains`
+├── news_domains.txt     # (Dibuat user) Allowlist penerbit — default `--news-domains`
 ├── keywords.txt         # (Dibuat user) Input keyword — default `--input`
 ├── url.txt              # (Dibuat user, opsional) Input URL pencarian manual
 ├── output.txt           # (Auto-generated) Hasil link — default `--output`
