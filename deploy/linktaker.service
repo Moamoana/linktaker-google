@@ -16,7 +16,8 @@ Environment=PYTHON_BIN=%h/linktaker-google/.venv/bin/python
 Environment=ENGINE=all
 Environment=MODE=both
 Environment=SORT=latest
-Environment=DAYS_BACK=1
+Environment=DATE_FROM=1d
+Environment=DATE_UNTIL=today
 Environment=MAX_PAGES=5
 # Environment=GEO=malaysia
 # Environment=PROXY=http://user:pass@host:2570

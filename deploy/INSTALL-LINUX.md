@@ -1,7 +1,7 @@
 # Menjalankan LinkTaker otomatis tiap 3 jam di laptop Linux
 
-Contoh di bawah memakai user `nolimit` (Ubuntu, ThinkPad). Ganti kalau
-username-nya beda.
+Semua perintah di bawah tidak memuat username — dipakai `~`, `$HOME`, atau `%h`
+(kode systemd untuk home directory), jadi bisa disalin apa adanya.
 
 Pakai `venv` bawaan Python — tidak perlu conda. Semua dependency project ini
 paket PyPI biasa, jadi tidak ada yang bisa dilakukan conda di sini yang `venv`
@@ -28,8 +28,17 @@ python3 --version
 
 ```bash
 cd ~
-git clone https://github.com/Moamoana/linktaker-google.git
+git clone -b feat/geo-and-headless https://github.com/Moamoana/linktaker-google.git
 cd linktaker-google
+```
+
+`-b feat/geo-and-headless` diperlukan selama branch ini belum di-merge: `main`
+belum memuat `deploy/`, `geo.py`, maupun flag `--headless`/`--on-captcha`.
+Setelah di-merge nanti, cukup `git clone` biasa. Pastikan benar:
+
+```bash
+git branch --show-current    # harus: feat/geo-and-headless
+ls deploy/                   # harus ada 4 file
 ```
 
 ## 3. Buat virtual environment
@@ -72,26 +81,39 @@ laptop Windows ke `~/linktaker-google/`:
 | `keywords.txt` | Program berhenti dengan `Input file not found` |
 | `news_domains.txt` | `--news-filter strict` ditolak, mode `smart` kehilangan daftar penerbitnya |
 
-## 7. Arahkan runner ke interpreter venv
+## 7. Cek path interpreter
 
-Buka `deploy/linktaker.service`, sesuaikan baris `PYTHON_BIN` dengan username
-Anda:
+**Tidak perlu diedit maupun tahu username Anda.** `linktaker.service` memakai
+`%h`, kode systemd untuk home directory user yang menjalankannya:
 
 ```
-Environment=PYTHON_BIN=/home/nolimit/linktaker-google/.venv/bin/python
+Environment=PYTHON_BIN=%h/linktaker-google/.venv/bin/python
 ```
 
-Cek dulu path-nya benar:
+systemd yang menggantinya jadi `/home/<username>/...` saat unit dijalankan, jadi
+file yang sama jalan di user mana pun. Cukup pastikan file yang ditunjuk memang
+ada:
 
 ```bash
 ls -l ~/linktaker-google/.venv/bin/python
 ```
 
+Kalau muncul daftar file, lanjut. Kalau `No such file`, berarti langkah 3–4
+belum selesai.
+
+> Kalau suatu saat perlu menulis path lengkapnya secara manual (misal untuk
+> cron, yang **tidak** mengenal `%h`), cek username dan home dengan:
+>
+> ```bash
+> whoami        # nama user, mis. nolimit
+> echo "$HOME"  # home lengkap, mis. /home/nolimit
+> ```
+
 ## 8. Tes manual dulu
 
 ```bash
 cd ~/linktaker-google
-PYTHON_BIN=$HOME/linktaker-google/.venv/bin/python ./deploy/run-linktaker.sh
+./deploy/run-linktaker.sh
 cat logs/run-*.log | tail -30
 ls -l hasil/
 ```
@@ -109,7 +131,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now linktaker.timer
 
 # Supaya tetap jalan walau user belum login ke desktop:
-sudo loginctl enable-linger nolimit
+sudo loginctl enable-linger "$(whoami)"
 ```
 
 Cek dan operasikan:
@@ -127,7 +149,7 @@ systemctl --user stop linktaker.timer          # matikan jadwal
 Kalau lebih suka cron, `crontab -e` lalu:
 
 ```
-0 */3 * * * /home/nolimit/linktaker-google/deploy/run-linktaker.sh >/dev/null 2>&1
+0 */3 * * * $HOME/linktaker-google/deploy/run-linktaker.sh >/dev/null 2>&1
 ```
 
 Bedanya: cron **tidak** mengejar jadwal yang terlewat saat laptop mati atau

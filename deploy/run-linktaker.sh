@@ -58,6 +58,25 @@ STAMP="$(date +%Y%m%d-%H%M)"
 OUT="$OUT_DIR/links-${ENGINE}-${STAMP}.txt"
 LOG="$LOG_DIR/run-${STAMP}.log"
 
+# Dijalankan orang di terminal, atau oleh cron/systemd? Saat dijalankan manual,
+# semuanya juga dicetak ke layar — script yang diam total selama 20 menit tidak
+# bisa dibedakan dari script yang mati. VERBOSE=1 memaksa tampil meski output
+# sedang di-pipe, VERBOSE=0 memaksa senyap.
+if [ -n "${VERBOSE:-}" ]; then
+    INTERACTIVE="$VERBOSE"
+elif [ -t 1 ]; then
+    INTERACTIVE=1
+else
+    INTERACTIVE=0
+fi
+
+# Satu baris ke log, dan ke layar juga kalau ada orang yang melihat.
+say() {
+    echo "$*" >>"$LOG"
+    [ "$INTERACTIVE" = "1" ] && echo "$*"
+    return 0
+}
+
 # Jangan tumpang tindih dengan run sebelumnya yang masih jalan.
 # flock yang hilang membuat setiap run terlihat "terkunci" dan dilewati diam-diam
 # selamanya — kegagalan yang jauh lebih sulit dilacak daripada berhenti di sini.
@@ -69,6 +88,10 @@ fi
 exec 9>"$APP_DIR/.linktaker.lock"
 if ! flock -n 9; then
     echo "$(date -Is) run sebelumnya masih berjalan — dilewati" >>"$LOG_DIR/skipped.log"
+    # Dari cron ini memang harus senyap, tapi orang yang baru menekan Enter
+    # perlu tahu kenapa tidak terjadi apa-apa.
+    [ "$INTERACTIVE" = "1" ] && \
+        echo "Run sebelumnya masih berjalan — dilewati. Cek: pgrep -af linktaker.py"
     exit 0
 fi
 
@@ -97,19 +120,30 @@ if [ "$HEADED" = "1" ] || [ "$ON_CAPTCHA" = "headed" ]; then
     fi
 fi
 
-{
-    echo "=== $(date -Is) | engine=$ENGINE mode=$MODE $DATE_FROM..$DATE_UNTIL -> $OUT ==="
-} >>"$LOG"
+say "=== $(date -Is) | engine=$ENGINE mode=$MODE $DATE_FROM..$DATE_UNTIL -> $OUT ==="
+say "Log: $LOG"
 
 status=0
-"${RUNNER[@]}" "$PYTHON_BIN" linktaker.py "${ARGS[@]}" >>"$LOG" 2>&1 || status=$?
+if [ "$INTERACTIVE" = "1" ]; then
+    # errexit dimatikan sementara: dengan "pipefail" di atas, pipeline ini
+    # mewarisi exit code linktaker, dan errexit akan menghentikan script tepat
+    # sebelum PIPESTATUS sempat dibaca — sehingga kegagalan berakhir tanpa
+    # pesan apa pun. PIPESTATUS juga harus dibaca persis setelah pipeline,
+    # karena perintah apa pun sesudahnya menimpanya.
+    set +e
+    "${RUNNER[@]}" "$PYTHON_BIN" linktaker.py "${ARGS[@]}" 2>&1 | tee -a "$LOG"
+    status=${PIPESTATUS[0]}
+    set -e
+else
+    "${RUNNER[@]}" "$PYTHON_BIN" linktaker.py "${ARGS[@]}" >>"$LOG" 2>&1 || status=$?
+fi
 
 if [ "$status" -ne 0 ]; then
-    echo "$(date -Is) GAGAL (exit $status), lihat $LOG" >>"$LOG"
+    say "$(date -Is) GAGAL (exit $status), lihat $LOG"
 elif [ -s "$OUT" ]; then
-    echo "$(date -Is) SELESAI — $(wc -l <"$OUT") link di $OUT" >>"$LOG"
+    say "$(date -Is) SELESAI — $(wc -l <"$OUT") link di $OUT"
 else
-    echo "$(date -Is) SELESAI tapi 0 link (kemungkinan kena CAPTCHA)" >>"$LOG"
+    say "$(date -Is) SELESAI tapi 0 link (kemungkinan kena CAPTCHA)"
 fi
 
 # Buang hasil dan log yang sudah lewat umur.
