@@ -3,59 +3,103 @@
 Contoh di bawah memakai user `nolimit` (Ubuntu, ThinkPad). Ganti kalau
 username-nya beda.
 
-## 1. Siapkan project di laptop Linux
+Pakai `venv` bawaan Python — tidak perlu conda. Semua dependency project ini
+paket PyPI biasa, jadi tidak ada yang bisa dilakukan conda di sini yang `venv`
+tidak bisa.
+
+## 1. Pasang paket sistem
 
 ```bash
 sudo apt update
-sudo apt install -y git
-# xvfb hanya perlu kalau Anda mau menjalankan mode berjendela tanpa desktop
-# (HEADED=1 atau ON_CAPTCHA=headed). Setelan default tidak membutuhkannya.
-# sudo apt install -y xvfb
+sudo apt install -y git python3 python3-venv python3-pip
+```
 
+`xvfb` **tidak** diperlukan untuk setelan default (headless). Pasang hanya kalau
+nanti mau menjalankan mode berjendela tanpa desktop — lihat [Catatan
+penting](#catatan-penting).
+
+Pastikan Python-nya 3.8 ke atas:
+
+```bash
+python3 --version
+```
+
+## 2. Ambil project
+
+```bash
 cd ~
 git clone https://github.com/Moamoana/linktaker-google.git
 cd linktaker-google
-
-conda create -n linktaker python=3.12 -y
-conda run -n linktaker pip install -r requirements.txt
-conda run -n linktaker playwright install chromium
-sudo $(conda run -n linktaker which playwright) install-deps chromium
 ```
 
-> Kalau `conda` belum ada di PATH untuk shell non-interaktif, jalankan sekali
-> `conda init bash` lalu buka ulang terminal.
-
-Script pemanggil tidak memakai `conda activate` — itu butuh shell interaktif dan
-tidak tersedia di cron/systemd. Sebagai gantinya ia memanggil interpreter env
-secara langsung. Cari path-nya:
+## 3. Buat virtual environment
 
 ```bash
-conda run -n linktaker python -c "import sys; print(sys.executable)"
-# contoh keluaran: /home/nolimit/miniconda3/envs/linktaker/bin/python
+python3 -m venv .venv
 ```
 
-Lalu set di `deploy/linktaker.service` (dan saat tes manual):
+Ini membuat folder `.venv/` di dalam project. Isinya interpreter Python
+tersendiri, jadi paket yang dipasang di sini tidak mengotori Python sistem.
+
+## 4. Pasang dependency
+
+```bash
+.venv/bin/pip install -U pip
+.venv/bin/pip install -r requirements.txt
+```
+
+Perhatikan: perintahnya `.venv/bin/pip`, **bukan** `pip` biasa. Cara ini tidak
+butuh `source .venv/bin/activate` sama sekali — dan itu memang disengaja, karena
+`activate` tidak tersedia di cron maupun systemd nanti.
+
+## 5. Pasang Chromium untuk Playwright
+
+```bash
+.venv/bin/playwright install chromium
+sudo .venv/bin/playwright install-deps chromium
+```
+
+Baris pertama mengunduh Chromium-nya. Baris kedua memasang library sistem yang
+dibutuhkan Chromium (butuh `sudo`, dan hanya sekali per laptop).
+
+## 6. Salin file input
+
+Dua file ini di-`.gitignore` sehingga tidak ikut ter-clone. Salin manual dari
+laptop Windows ke `~/linktaker-google/`:
+
+| File | Kalau tidak ada |
+|---|---|
+| `keywords.txt` | Program berhenti dengan `Input file not found` |
+| `news_domains.txt` | `--news-filter strict` ditolak, mode `smart` kehilangan daftar penerbitnya |
+
+## 7. Arahkan runner ke interpreter venv
+
+Buka `deploy/linktaker.service`, sesuaikan baris `PYTHON_BIN` dengan username
+Anda:
 
 ```
-Environment=PYTHON_BIN=/home/nolimit/miniconda3/envs/linktaker/bin/python
+Environment=PYTHON_BIN=/home/nolimit/linktaker-google/.venv/bin/python
 ```
 
-`keywords.txt` tidak ikut ke repo (di-`.gitignore`), jadi salin manual dari
-laptop Windows lalu taruh di `~/linktaker-google/keywords.txt`.
+Cek dulu path-nya benar:
 
-## 2. Tes manual dulu
+```bash
+ls -l ~/linktaker-google/.venv/bin/python
+```
+
+## 8. Tes manual dulu
 
 ```bash
 cd ~/linktaker-google
-./deploy/run-linktaker.sh
+PYTHON_BIN=$HOME/linktaker-google/.venv/bin/python ./deploy/run-linktaker.sh
 cat logs/run-*.log | tail -30
 ls -l hasil/
 ```
 
 Kalau ini belum menghasilkan link, jadwal otomatis juga tidak akan menghasilkan
-apa-apa — perbaiki di sini dulu.
+apa-apa — perbaiki di sini dulu sebelum lanjut.
 
-## 3. Pasang timer systemd (cara yang dipakai)
+## 9. Pasang timer systemd
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -100,7 +144,9 @@ perintah manual:
 | `ENGINE`    | `all`   | `google` / `yahoo` / `bing` / `all`               |
 | `MODE`      | `both`  | `web` (tab Semua) / `nws` (Berita) / `both`       |
 | `SORT`      | `latest`| urutan hasil                                       |
-| `DAYS_BACK` | `1`     | `--from` = hari ini dikurangi sekian hari          |
+| `DATE_FROM` | `1d`    | Awal rentang. Relatif (`1d`, `w`, `2w`, `3m`, `1y`) atau tanggal pasti |
+| `DATE_UNTIL`| `today` | Akhir rentang, format sama                         |
+| `DAYS_BACK` | –       | Cara lama, masih jalan: `DAYS_BACK=7` sama dengan `DATE_FROM=7d` |
 | `MAX_PAGES` | `5`     | kosongkan untuk semua halaman (lebih rawan CAPTCHA)|
 | `GEO`       | –       | `my`, `malaysia`, dst.                             |
 | `PROXY`     | –       | `http://user:pass@host:2570`                       |
@@ -110,7 +156,14 @@ perintah manual:
 
 ```bash
 ENGINE=google GEO=malaysia MAX_PAGES=3 ./deploy/run-linktaker.sh
+DATE_FROM=w ./deploy/run-linktaker.sh          # jendela seminggu terakhir
 ```
+
+Rentang tanggalnya sengaja ditulis relatif (`1d`, `w`, `3m`), bukan tanggal
+pasti. Bedanya baru terasa setelah beberapa hari: `DATE_FROM=2026-08-27` akan
+terus melebar setiap hari sampai crawl-nya makin lambat dan makin rawan CAPTCHA,
+sedangkan `DATE_FROM=1d` menjaga lebar jendelanya tetap. Perhitungannya
+dilakukan `linktaker` sendiri di setiap run, bukan saat file ini disalin.
 
 ## Catatan penting
 

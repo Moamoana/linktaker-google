@@ -4,27 +4,34 @@
 # Yang diurus script ini dan tidak diurus `python linktaker.py` sendiri:
 #   - cd ke folder project (semua path di tool ini relatif: keywords.txt,
 #     news_domains.txt, .browser_profile/)
-#   - rentang tanggal dihitung dari hari ini, bukan tanggal mati di run.txt
+#   - rentang tanggal dihitung dari hari ini, bukan tanggal mati di argumen
 #   - output diberi timestamp, karena cli.py menulis dengan mode "w" alias
 #     menimpa file lama
-#   - display virtual (Xvfb), karena browser.py memakai headless=False
+#   - --on-captcha skip, karena tidak ada yang menyelesaikan CAPTCHA jam 3 pagi
 #   - flock, supaya run jam berikutnya tidak menabrak run yang belum selesai
 #     dan merusak .browser_profile/
 
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-$HOME/linktaker-google}"
-# Interpreter Python yang dipakai. Untuk conda, isi dengan path absolut ke
-# python di dalam env (conda run -n NAMA python -c "import sys; print(sys.executable)").
-# conda activate tidak dipakai karena butuh shell interaktif, yang tidak ada di cron.
-PYTHON_BIN="${PYTHON_BIN:-$HOME/miniconda3/envs/linktaker/bin/python}"
+# Interpreter Python yang dipakai — path absolut ke python di dalam venv.
+# Dipanggil langsung, bukan lewat "source .venv/bin/activate": activate butuh
+# shell interaktif, dan cron maupun systemd tidak menyediakannya.
+# Untuk conda, arahkan saja ke python di dalam env-nya; script tidak peduli.
+PYTHON_BIN="${PYTHON_BIN:-$APP_DIR/.venv/bin/python}"
 OUT_DIR="${OUT_DIR:-$APP_DIR/hasil}"
 LOG_DIR="${LOG_DIR:-$APP_DIR/logs}"
 
 ENGINE="${ENGINE:-all}"        # google | yahoo | bing | all
 MODE="${MODE:-both}"           # web | nws | both
 SORT="${SORT:-latest}"
-DAYS_BACK="${DAYS_BACK:-1}"    # --from = hari ini dikurangi sekian hari
+# Rentang tanggal, diserahkan apa adanya ke --from/--until. Boleh relatif
+# (1d, w, 2w, 3m, 1y, today, yesterday) atau tanggal pasti (2026-08-18).
+# Bentuk relatif dihitung ulang tiap run oleh linktaker sendiri, jadi jadwal
+# yang dibiarkan jalan berhari-hari ikut bergeser bersama kalender.
+DATE_FROM="${DATE_FROM:-${DAYS_BACK:+${DAYS_BACK}d}}"
+DATE_FROM="${DATE_FROM:-1d}"
+DATE_UNTIL="${DATE_UNTIL:-today}"
 MAX_PAGES="${MAX_PAGES:-5}"    # kosongkan untuk crawl semua halaman
 GEO="${GEO:-}"                 # mis. my / malaysia; kosong = default browser
 PROXY="${PROXY:-}"
@@ -39,17 +46,15 @@ ON_CAPTCHA="${ON_CAPTCHA:-skip}"   # skip | headed
 cd "$APP_DIR"
 mkdir -p "$OUT_DIR" "$LOG_DIR"
 
-# Gagal cepat dan jelas kalau path conda salah — tanpa ini errornya baru muncul
+# Gagal cepat dan jelas kalau path interpreter salah — tanpa ini errornya baru muncul
 # 3 jam sekali di dalam log sebagai "command not found".
 if [ ! -x "$PYTHON_BIN" ]; then
     echo "$(date -Is) PYTHON_BIN tidak ditemukan: $PYTHON_BIN" >&2
-    echo "  cari dengan: conda run -n linktaker python -c 'import sys; print(sys.executable)'" >&2
+    echo "  buat venv-nya: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt" >&2
     exit 127
 fi
 
 STAMP="$(date +%Y%m%d-%H%M)"
-FROM="$(date -d "-${DAYS_BACK} day" +%F)"
-UNTIL="$(date +%F)"
 OUT="$OUT_DIR/links-${ENGINE}-${STAMP}.txt"
 LOG="$LOG_DIR/run-${STAMP}.log"
 
@@ -68,7 +73,7 @@ if ! flock -n 9; then
 fi
 
 ARGS=(--input keywords.txt --engine "$ENGINE" --mode "$MODE" --sort "$SORT"
-      --from "$FROM" --until "$UNTIL" --output "$OUT"
+      --from "$DATE_FROM" --until "$DATE_UNTIL" --output "$OUT"
       --on-captcha "$ON_CAPTCHA")
 if [ "$HEADED" = "1" ]; then ARGS+=(--headed); else ARGS+=(--headless); fi
 [ -n "$MAX_PAGES" ] && ARGS+=(--max-pages "$MAX_PAGES")
@@ -93,7 +98,7 @@ if [ "$HEADED" = "1" ] || [ "$ON_CAPTCHA" = "headed" ]; then
 fi
 
 {
-    echo "=== $(date -Is) | engine=$ENGINE mode=$MODE $FROM..$UNTIL -> $OUT ==="
+    echo "=== $(date -Is) | engine=$ENGINE mode=$MODE $DATE_FROM..$DATE_UNTIL -> $OUT ==="
 } >>"$LOG"
 
 status=0

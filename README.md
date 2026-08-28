@@ -18,6 +18,7 @@
 - [Pencarian per Negara (`--geo`)](#pencarian-per-negara---geo)
 - [File Input & Output](#file-input--output)
 - [Mode Fetching](#mode-fetching)
+- [Tanggal Relatif](#tanggal-relatif)
 - [Headless & CAPTCHA](#headless--captcha)
 - [Anti-Deteksi & Stealth](#anti-deteksi--stealth)
 - [Proxy & Autentikasi](#proxy--autentikasi)
@@ -57,6 +58,7 @@
 | **Tab Semua / Berita** | `--mode web` (tab Semua, default), `--mode nws` (tab Berita), `--mode both` (gabungan) — tab Semua menangkap portal baru yang belum diakui Google sebagai news site |
 | **Filter Berita** | `--news-filter` menjaga output hanya berisi artikel berita: `smart` (buang host non-berita + URL non-artikel), `strict` (hanya penerbit di `news_domains.txt`), `off` |
 | **Pencarian per Negara** | `--geo my` / `--geo malaysia` — cari seolah-olah dari negara tertentu. Google dapat `gl=`, Bing `cc=`, Yahoo situs regionalnya. Lihat [Pencarian per Negara](#pencarian-per-negara---geo) |
+| **Tanggal Relatif** | `--from w` / `--from 7d` / `--from 3m` — dihitung ulang tiap run, jadi jadwal berkala tidak terkunci di rentang tanggal yang sama. Lihat [Tanggal Relatif](#tanggal-relatif) |
 | **CLI Flags** | `--engine`, `--input`, `--from`, `--until`, `--sort`, `--geo`, `--output`, `--max-pages`, `--proxy`, `--mode`, `--news-filter`, `--news-domains`, `--headless`/`--headed`, `--on-captcha` |
 | **Headless + Jendela Saat Perlu** | Crawl jalan tanpa jendela; jendela hanya dibuka saat kena CAPTCHA, lalu balik headless dan **lanjut dari halaman yang sama**. `--on-captcha skip` untuk run terjadwal. Lihat [Headless & CAPTCHA](#headless--captcha) |
 | **Multi-mode Fetch** | `curl` (cepat), `playwright` (akurat), `auto` (fallback otomatis) |
@@ -283,8 +285,8 @@ python -m linktaker --input keyword1.txt
 |---|---|---|---|
 | `--engine {google,bing,yahoo,all}` | tidak | `google` | Search engine yang di-crawl. `all` menjalankan Google → Yahoo → Bing berurutan dan menggabung hasilnya ke satu `--output` |
 | `--input FILE` | tidak | `keywords.txt` | File txt berisi keyword, satu per baris |
-| `--from YYYY-MM-DD` | tidak | — | Ambil hasil mulai tanggal ini. Tanpa `--from`/`--until`, pencarian jalan tanpa filter tanggal |
-| `--until YYYY-MM-DD` | tidak | — | Ambil hasil sampai tanggal ini |
+| `--from DATE` | tidak | — | Ambil hasil mulai tanggal ini. Terima tanggal pasti (`2026-08-18`) maupun relatif (`w`, `7d`, `3m`). Tanpa `--from`/`--until`, pencarian jalan tanpa filter tanggal. Lihat [Tanggal Relatif](#tanggal-relatif) |
+| `--until DATE` | tidak | — | Ambil hasil sampai tanggal ini. Format sama dengan `--from` |
 | `--sort {latest,relevance}` | tidak | `relevance` | `latest` = urut terbaru, `relevance` = urutan default engine. Lihat [catatan per engine](#search-engine-google-bing--yahoo) |
 | `--geo COUNTRY` | tidak | ikut lokasi browser | Cari seolah-olah dari negara ini. Terima kode ISO (`my`) maupun nama negara (`malaysia`, `jerman`). Lihat [Pencarian per Negara](#pencarian-per-negara---geo) |
 | `--output FILE` | tidak | `output.txt` | File tujuan hasil link |
@@ -557,6 +559,55 @@ Kredensial autentikasi dalam format JSON:
 - Jika tidak mendapat link, otomatis beralih ke Playwright
 - **Pro:** Keseimbangan antara kecepatan dan akurasi
 - **Kontra:** Sedikit lebih kompleks
+
+---
+
+## Tanggal Relatif
+
+`--from` dan `--until` menerima tanggal pasti (`2026-08-18`) maupun **tanggal
+relatif terhadap hari ini**. Bentuk relatif dihitung ulang **setiap kali program
+dijalankan**, jadi jadwal yang dibiarkan berjalan berhari-hari ikut bergeser
+bersama kalender — bukan terkunci di rentang yang sama terus.
+
+| Token | Artinya |
+|---|---|
+| `today`, `now`, `0` | hari ini |
+| `yesterday`, `kemarin` | kemarin |
+| `d`, `1d`, `7d` | sekian **hari** lalu |
+| `w`, `2w` | sekian **minggu** lalu |
+| `m`, `3m` | sekian **bulan** lalu |
+| `y`, `1y` | sekian **tahun** lalu |
+
+Satuan tanpa angka berarti satu, jadi `w` sama dengan `1w`. Huruf besar juga
+diterima, dan tanda minus di depan boleh ditulis (`-7d` sama dengan `7d`).
+
+```bash
+python linktaker.py --input keywords.txt --from w                  # seminggu terakhir
+python linktaker.py --input keywords.txt --from 3d --until today   # tiga hari terakhir
+python linktaker.py --input keywords.txt --from 1m --sort latest   # sebulan terakhir
+```
+
+**Inilah bedanya saat dijalankan berulang.** Misalnya crawler dijadwalkan tiap
+3 jam dan Anda menulis `--from 2026-08-27`:
+
+| Hari | `--from 2026-08-27` | `--from 1d` |
+|---|---|---|
+| 28 Agu | 27 Agu → 28 Agu ✅ | 27 Agu → 28 Agu ✅ |
+| 29 Agu | 27 Agu → 29 Agu (jendela melebar) | 28 Agu → 29 Agu ✅ |
+| 5 Sep | 27 Agu → 5 Sep (9 hari, makin berat) | 4 Sep → 5 Sep ✅ |
+
+Tanggal pasti membuat rentangnya terus melebar setiap hari — makin lambat, makin
+banyak halaman, dan makin rawan CAPTCHA. Token relatif menjaga lebar jendelanya
+tetap.
+
+Setiap run menampilkan hasil resolusinya, supaya jelas token itu jadi tanggal apa:
+
+```text
+Date: 2026-08-21 (dari 'w') .. 2026-08-28 (dari 'today') | Sort: latest | ...
+```
+
+> **Catatan pengurangan bulan:** `1m` dari tanggal 31 Maret jadi 28 Februari,
+> bukan tanggal yang tidak ada. Tahun kabisat ikut diperhitungkan.
 
 ---
 

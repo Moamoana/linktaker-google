@@ -18,8 +18,8 @@ from .config import (
 from .deps import CLOUDSCRAPER_AVAILABLE, STEALTH_AVAILABLE, BROWSERFORGE_AVAILABLE, PLAYWRIGHT_AVAILABLE
 from .engines import ENGINES, MODE_LABELS, SEARCH_MODES, expand_mode, get_engine
 from .fetchers import process_one_url
-from .inputs import (parse_date, read_auth, read_keywords, read_news_domains,
-                     read_proxies, read_urls)
+from .inputs import (RELATIVE_HELP, parse_date, read_auth, read_keywords,
+                     read_news_domains, read_proxies, read_urls)
 from .url_utils import strip_amp
 
 EXAMPLE = """example:
@@ -42,8 +42,13 @@ EXAMPLE = """example:
   # run google, yahoo and bing back to back into one merged output file
   python linktaker.py --engine all --input keyword1.txt --from 2026-08-18 --until 2026-08-24 --sort latest --mode both --output hasil.txt
 
+  # relative dates — resolved every run, so a schedule never falls behind
+  python linktaker.py --input keyword1.txt --from w                 # last week to now
+  python linktaker.py --input keyword1.txt --from 3d --until today  # last three days
+  python linktaker.py --input keyword1.txt --from 1m --sort latest  # last month
+
   # unattended (cron, systemd): no window at all, challenged pages dropped
-  python linktaker.py --input keyword1.txt --headless --on-captcha skip
+  python linktaker.py --input keyword1.txt --from w --headless --on-captcha skip
 
   # attended: no window until a CAPTCHA needs one, then straight back to headless
   python linktaker.py --input keyword1.txt --headless --on-captcha headed
@@ -78,12 +83,16 @@ def build_parser():
         help=f"text file with one keyword per line (default: {KEYWORDS_FILE})",
     )
     parser.add_argument(
-        "--from", dest="date_from", metavar="YYYY-MM-DD",
-        help="only results published on/after this date (optional)",
+        "--from", dest="date_from", metavar="DATE",
+        help=f"only results published on/after this date (optional). "
+             f"{RELATIVE_HELP}. A relative date is resolved on every run, so a "
+             f"scheduled crawl keeps asking for the same window as the "
+             f"calendar moves",
     )
     parser.add_argument(
-        "--until", dest="date_until", metavar="YYYY-MM-DD",
-        help="only results published on/before this date (optional)",
+        "--until", dest="date_until", metavar="DATE",
+        help=f"only results published on/before this date (optional). "
+             f"Same formats as --from",
     )
     parser.add_argument(
         "--sort", choices=("latest", "relevance"), default=DEFAULT_SORT,
@@ -157,6 +166,13 @@ def build_parser():
     return parser
 
 
+def describe_date(resolved, raw) -> str:
+    """The date, plus the shorthand it came from when the two differ."""
+    if raw and str(raw).strip().lower() != resolved.isoformat():
+        return f"{resolved} (dari '{raw}')"
+    return str(resolved)
+
+
 def parse_args(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -175,6 +191,12 @@ def parse_args(argv=None):
         except ValueError as e:
             parser.error(str(e))
 
+    # Keep what was typed. "w" resolving to a date is exactly the thing worth
+    # showing back, and an out-of-order range is unreadable as two ISO dates
+    # when the user wrote a relative one.
+    args.date_from_raw = args.date_from
+    args.date_until_raw = args.date_until
+
     if args.date_from:
         try:
             args.date_from = parse_date(args.date_from, "--from")
@@ -188,7 +210,9 @@ def parse_args(argv=None):
             parser.error(str(e))
 
     if args.date_from and args.date_until and args.date_from > args.date_until:
-        parser.error(f"--from ({args.date_from}) is later than --until ({args.date_until})")
+        parser.error(f"--from ({describe_date(args.date_from, args.date_from_raw)}) "
+                     f"is later than --until "
+                     f"({describe_date(args.date_until, args.date_until_raw)})")
 
     args.allowlist = read_news_domains(args.news_domains)
     if args.news_filter == "strict" and not args.allowlist:
@@ -241,12 +265,18 @@ def resolve_proxies(args):
 
 def describe_run(args, engine, mode, url_count):
     """Print what this run is about to do."""
+    # Show the resolved dates: a relative window is the whole point of being
+    # able to leave this on a schedule, and it is also the one thing a reader
+    # cannot check by eye.
+    date_from = describe_date(args.date_from, getattr(args, "date_from_raw", None))
+    date_until = describe_date(args.date_until, getattr(args, "date_until_raw", None))
+
     if args.date_from and args.date_until:
-        date_range = f"{args.date_from} .. {args.date_until}"
+        date_range = f"{date_from} .. {date_until}"
     elif args.date_from:
-        date_range = f"from {args.date_from}"
+        date_range = f"from {date_from}"
     elif args.date_until:
-        date_range = f"until {args.date_until}"
+        date_range = f"until {date_until}"
     else:
         date_range = "any date"
 

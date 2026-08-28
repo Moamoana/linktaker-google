@@ -3,21 +3,71 @@
 Engine-neutral — turning a keyword into a search URL is each engine's job.
 """
 
+import calendar
 import json
 import os
-from datetime import date, datetime
+import re
+from datetime import date, datetime, timedelta
 
 from .config import AUTH_FILE, NEWS_DOMAINS_FILE
 
 DATE_FORMAT = "%Y-%m-%d"
 
+# Relative dates: "7d", "2w", "m", "1y". A bare unit means one of it, so "w" is
+# last week. Written this way a scheduled run keeps asking for the same window
+# relative to the day it runs, instead of drifting further behind a fixed date.
+RELATIVE_RE = re.compile(r"^-?(\d*)\s*([dwmy])$")
 
-def parse_date(value: str, flag: str) -> date:
-    """Parse a YYYY-MM-DD CLI date. Raises ValueError with a readable message."""
+TODAY_WORDS = {"today", "now", "0"}
+YESTERDAY_WORDS = {"yesterday", "kemarin"}
+
+RELATIVE_HELP = ("YYYY-MM-DD, or relative to today: today, yesterday, "
+                 "7d (days), 2w (weeks), 3m (months), 1y (years) — "
+                 "a bare unit means one, so 'w' is a week ago")
+
+
+def shift_months(anchor: date, months: int) -> date:
+    """`anchor` moved back by whole months, clamped to the target month's length.
+
+    Subtracting a month from the 31st has no exact answer, so the day is pulled
+    back to the last one that exists: 31 March minus one month is 28 February.
+    """
+    total = anchor.year * 12 + (anchor.month - 1) - months
+    year, month = divmod(total, 12)
+    month += 1
+    return date(year, month, min(anchor.day, calendar.monthrange(year, month)[1]))
+
+
+def parse_date(value: str, flag: str, today: date = None) -> date:
+    """Parse a CLI date — absolute YYYY-MM-DD or relative to today.
+
+    Resolved fresh on every run, so a crawler left on a schedule walks its
+    window forward with the calendar rather than re-crawling one fixed range.
+    """
+    anchor = today or date.today()
+    raw = value.strip().lower()
+
+    if raw in TODAY_WORDS:
+        return anchor
+    if raw in YESTERDAY_WORDS:
+        return anchor - timedelta(days=1)
+
+    match = RELATIVE_RE.match(raw)
+    if match:
+        count = int(match.group(1)) if match.group(1) else 1
+        unit = match.group(2)
+        if unit == "d":
+            return anchor - timedelta(days=count)
+        if unit == "w":
+            return anchor - timedelta(weeks=count)
+        if unit == "m":
+            return shift_months(anchor, count)
+        return shift_months(anchor, count * 12)
+
     try:
         return datetime.strptime(value.strip(), DATE_FORMAT).date()
     except ValueError:
-        raise ValueError(f"{flag} must be in YYYY-MM-DD format (got '{value}')")
+        raise ValueError(f"{flag} must be {RELATIVE_HELP} (got '{value}')")
 
 
 def read_keywords(path):

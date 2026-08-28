@@ -12,7 +12,7 @@ ExecStart=%h/linktaker-google/deploy/run-linktaker.sh
 TimeoutStartSec=7200
 
 # Ubah di sini kalau mau parameter lain (lihat run-linktaker.sh).
-Environment=PYTHON_BIN=%h/miniconda3/envs/linktaker/bin/python
+Environment=PYTHON_BIN=%h/linktaker-google/.venv/bin/python
 Environment=ENGINE=all
 Environment=MODE=both
 Environment=SORT=latest
