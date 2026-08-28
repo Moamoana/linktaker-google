@@ -1,5 +1,5 @@
 # Input/output data — keyword lists, crawl results, proxy lists
-*.txt
+
 
 
 # ...except the dependency list, which belongs in the repo
