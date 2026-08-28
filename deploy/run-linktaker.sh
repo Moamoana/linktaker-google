@@ -14,6 +14,16 @@
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-$HOME/linktaker-google}"
+
+# Setelan khusus mesin ini. File-nya di-.gitignore, jadi mengubah setelan di
+# sana tidak pernah bentrok dengan `git pull` — beda dengan mengedit script ini
+# langsung, yang membuat setiap tarikan berikutnya ditolak.
+# Lihat deploy/linktaker.env.example untuk isinya.
+ENV_FILE="${ENV_FILE:-$APP_DIR/deploy/linktaker.env}"
+if [ -f "$ENV_FILE" ]; then
+    # shellcheck source=/dev/null
+    . "$ENV_FILE"
+fi
 # Interpreter Python yang dipakai — path absolut ke python di dalam venv.
 # Dipanggil langsung, bukan lewat "source .venv/bin/activate": activate butuh
 # shell interaktif, dan cron maupun systemd tidak menyediakannya.

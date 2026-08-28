@@ -16,3 +16,6 @@ __pycache__/
 logs/
 hasil/
 .linktaker.lock
+
+# Setelan lokal per-mesin untuk deploy/run-linktaker.sh (contohnya tetap di repo)
+deploy/linktaker.env

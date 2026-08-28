@@ -158,8 +158,37 @@ systemd timer lebih tepat.
 
 ## Mengubah parameter crawl
 
-Semua lewat environment variable, baik di `linktaker.service` maupun di depan
-perintah manual:
+Ada tiga tempat, dan urutan menangnya dari atas ke bawah:
+
+**1. Di depan perintah — untuk sekali jalan**
+
+```bash
+ENGINE=google MODE=web MAX_PAGES=2 ./deploy/run-linktaker.sh
+```
+
+**2. `deploy/linktaker.env` — setelan tetap mesin ini**
+
+```bash
+cp deploy/linktaker.env.example deploy/linktaker.env
+nano deploy/linktaker.env
+```
+
+Hapus `#` di depan baris yang ingin diaktifkan. File ini di-`.gitignore`,
+jadi tidak akan bentrok saat `git pull`. Berlaku untuk run manual maupun
+terjadwal.
+
+**3. `~/.config/systemd/user/linktaker.service` — khusus run terjadwal**
+
+```bash
+nano ~/.config/systemd/user/linktaker.service
+systemctl --user daemon-reload
+```
+
+> **Jangan mengedit `deploy/run-linktaker.sh` langsung.** File itu di-track git,
+> jadi setiap perubahan di sana membuat `git pull` berikutnya ditolak dengan
+> *"local changes would be overwritten by merge"*. Pakai `linktaker.env`.
+
+Daftar variabelnya:
 
 | Variabel    | Default | Arti                                              |
 |-------------|---------|---------------------------------------------------|
