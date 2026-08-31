@@ -1,24 +1,36 @@
-# Input/output data — keyword lists, crawl results, proxy lists
-
-
-
-# ...except the dependency list, which belongs in the repo
-!requirements.txt
+# Hasil, log, dan state — semuanya dibuat ulang tiap run.
+data/hasil/
+data/logs/
+data/state/
+data/.linktaker.lock
+# Input opsional yang isinya milik satu mesin saja.
+data/output.txt
+data/url.txt
+data/proxies.txt
+data/auth.json
+# data/keywords.txt dan data/news_domains.txt sengaja ikut di-track: keduanya
+# input yang memang dipakai bersama dan berubah lewat commit.
 
 __pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+build/
+dist/
 
 # Persistent browser profile and its pinned fingerprint — machine-local state,
 # and the profile holds live Google cookies.
 .browser_profile/
 .fingerprint.json
 
-# Artefak dari deploy/run-linktaker.sh
-logs/
-hasil/
-.linktaker.lock
-
 # Setelan lokal per-mesin untuk deploy/run-linktaker.sh (contohnya tetap di repo)
 deploy/linktaker.env
 
-# Riwayat kirim & antrean dari deploy/submit-links.py
-state/
+# Lokasi lama, sebelum semuanya pindah ke data/. Dibiarkan di sini supaya
+# mesin yang belum dipindahkan tidak tiba-tiba meng-commit hasil crawl-nya.
+/hasil/
+/logs/
+/state/
+/hasil.txt
+/output.txt
+/.linktaker.lock

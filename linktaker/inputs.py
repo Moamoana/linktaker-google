@@ -9,7 +9,7 @@ import os
 import re
 from datetime import date, datetime, timedelta
 
-from .config import AUTH_FILE, NEWS_DOMAINS_FILE
+from .config import AUTH_FILE, DATA_DIR, NEWS_DOMAINS_FILE
 
 DATE_FORMAT = "%Y-%m-%d"
 
@@ -24,6 +24,23 @@ YESTERDAY_WORDS = {"yesterday", "kemarin"}
 RELATIVE_HELP = ("YYYY-MM-DD, or relative to today: today, yesterday, "
                  "7d (days), 2w (weeks), 3m (months), 1y (years) — "
                  "a bare unit means one, so 'w' is a week ago")
+
+
+def resolve_data_path(path):
+    """Path apa adanya, kecuali file lamanya masih tergeletak di root project.
+
+    Semua input pindah ke `data/` saat struktur project dirapikan. Mesin yang
+    sudah jalan masih memegang salinan lama di root, dan sebuah run terjadwal
+    jam tiga pagi tidak boleh mati hanya karena file belum dipindahkan —
+    dipakai yang lama, dengan pengingat sekali per run.
+    """
+    if os.path.exists(path):
+        return path
+    legacy = os.path.basename(path)
+    if os.path.dirname(path) == DATA_DIR and os.path.exists(legacy):
+        print("[!] %s masih di root project — pindahkan ke %s" % (legacy, path))
+        return legacy
+    return path
 
 
 def shift_months(anchor: date, months: int) -> date:
@@ -84,6 +101,7 @@ def read_keywords(path):
     """
     keywords = []
     seen = set()
+    path = resolve_data_path(path)
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -130,6 +148,7 @@ def read_news_domains(path=NEWS_DOMAINS_FILE):
     A missing file is not an error in `smart` mode, which works without one;
     `--news-filter strict` checks for it separately and refuses to run blind.
     """
+    path = resolve_data_path(path)
     if not os.path.exists(path):
         return set()
 

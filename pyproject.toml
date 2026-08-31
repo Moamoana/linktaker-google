@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "linktaker"
+version = "0.2.0"
+description = "Pengumpul link berita dari Google, Bing, dan Yahoo, lengkap dengan pengiriman hasil terjadwal"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "beautifulsoup4==4.14.3",
+    "browserforge==1.2.4",
+    "cloudscraper==1.2.71",
+    "curl-cffi==0.14.0",
+    "feedparser==6.0.12",
+    "playwright==1.58.0",
+    "playwright-stealth==1.0.6",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+# Dipasang dengan `pip install -e .` kalau memang diinginkan; menjalankan
+# langsung dari folder project (python linktaker.py) tetap bekerja tanpa itu.
+[project.scripts]
+linktaker = "linktaker.cli:main"
+linktaker-submit = "linktaker.submit.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["linktaker*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Test hanya menyentuh logika murni — tidak ada yang membuka browser atau
+# jaringan, jadi seluruh suite selesai dalam hitungan detik.
+addopts = "-q"

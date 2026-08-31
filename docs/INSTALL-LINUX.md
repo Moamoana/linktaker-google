@@ -38,7 +38,7 @@ Setelah di-merge nanti, cukup `git clone` biasa. Pastikan benar:
 
 ```bash
 git branch --show-current    # harus: feat/geo-and-headless
-ls deploy/                   # harus ada 4 file
+ls deploy/ docs/             # script ops dan dokumen
 ```
 
 ## 3. Buat virtual environment
@@ -71,15 +71,18 @@ sudo .venv/bin/playwright install-deps chromium
 Baris pertama mengunduh Chromium-nya. Baris kedua memasang library sistem yang
 dibutuhkan Chromium (butuh `sudo`, dan hanya sekali per laptop).
 
-## 6. Salin file input
+## 6. Cek file input
 
-Dua file ini di-`.gitignore` sehingga tidak ikut ter-clone. Salin manual dari
-laptop Windows ke `~/linktaker-google/`:
+Keduanya ikut ter-clone dan berada di `data/`:
 
-| File | Kalau tidak ada |
-|---|---|
-| `keywords.txt` | Program berhenti dengan `Input file not found` |
-| `news_domains.txt` | `--news-filter strict` ditolak, mode `smart` kehilangan daftar penerbitnya |
+| File | Isi | Kalau tidak ada |
+|---|---|---|
+| `data/keywords.txt` | satu keyword per baris | Program berhenti dengan `Input file not found` |
+| `data/news_domains.txt` | allowlist penerbit | `--news-filter strict` ditolak, mode `smart` kehilangan daftar penerbitnya |
+
+Mengubah keyword = mengedit `data/keywords.txt` lalu commit seperti perubahan
+lain; hasil dan log tidak ikut ter-commit karena `data/hasil/`, `data/logs/`,
+dan `data/state/` di-`.gitignore`.
 
 ## 7. Cek path interpreter
 
@@ -114,8 +117,8 @@ belum selesai.
 ```bash
 cd ~/linktaker-google
 ./deploy/run-linktaker.sh
-cat logs/run-*.log | tail -30
-ls -l hasil/
+cat data/logs/run-*.log | tail -30
+ls -l data/hasil/
 ```
 
 Kalau ini belum menghasilkan link, jadwal otomatis juga tidak akan menghasilkan
@@ -125,7 +128,7 @@ apa-apa — perbaiki di sini dulu sebelum lanjut.
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cp ~/linktaker-google/deploy/linktaker.{service,timer} ~/.config/systemd/user/
+cp ~/linktaker-google/deploy/systemd/linktaker.{service,timer} ~/.config/systemd/user/
 
 systemctl --user daemon-reload
 systemctl --user enable --now linktaker.timer
@@ -140,7 +143,7 @@ Cek dan operasikan:
 systemctl --user list-timers linktaker.timer   # kapan run berikutnya
 systemctl --user start linktaker.service       # paksa jalan sekarang
 journalctl --user -u linktaker.service -n 50   # log systemd
-tail -f ~/linktaker-google/logs/run-*.log      # log crawl
+tail -f ~/linktaker-google/data/logs/run-*.log # log crawl
 systemctl --user stop linktaker.timer          # matikan jadwal
 ```
 
@@ -155,6 +158,87 @@ Kalau lebih suka cron, `crontab -e` lalu:
 Bedanya: cron **tidak** mengejar jadwal yang terlewat saat laptop mati atau
 suspend, sedangkan `Persistent=true` di systemd timer mengejarnya. Untuk laptop,
 systemd timer lebih tepat.
+
+## Alternatif: PM2
+
+Kalau mesin ini memang menyala terus dan servis lain sudah diawasi PM2, jadwalnya
+bisa dipindah ke sana. Konfigurasinya sudah ada di repo:
+[`deploy/ecosystem.config.js`](../deploy/ecosystem.config.js) dan
+[`deploy/pm2-loop.sh`](../deploy/pm2-loop.sh).
+
+**Yang diawasi PM2 adalah `pm2-loop.sh`, bukan `run-linktaker.sh`.** Ini bukan
+detail kecil: `run-linktaker.sh` crawl sekali lalu exit 0, dan PM2 membaca exit
+sebagai "mati" lalu menjalankannya lagi seketika — hasilnya crawl beruntun tanpa
+jeda sepanjang hari, jalan tercepat menuju CAPTCHA. `pm2-loop.sh` adalah proses
+yang memang hidup terus: ia memanggil `run-linktaker.sh` tiap 3 jam lalu tidur,
+jadi di `pm2 list` statusnya tetap `online` di antara crawl.
+
+Pasang PM2 (sekali per mesin):
+
+```bash
+sudo apt install -y nodejs npm
+sudo npm install -g pm2
+```
+
+Matikan dulu penjadwal yang lama, supaya tidak jalan dobel:
+
+```bash
+crontab -e                                  # beri # di depan baris linktaker
+systemctl --user disable --now linktaker.timer   # kalau timer-nya sempat dipasang
+```
+
+Jalankan:
+
+```bash
+cd ~/linktaker-google
+pm2 start deploy/ecosystem.config.js
+pm2 save                     # ingat daftar app-nya
+pm2 startup                  # ikuti perintah sudo yang dicetak, supaya hidup lagi setelah reboot
+```
+
+`pm2 start` langsung melakukan satu crawl, lalu menempel ke jam bulat
+berikutnya (00:00, 03:00, 06:00, … waktu lokal, plus sebaran 0–10 menit).
+
+Operasional harian:
+
+```bash
+pm2 status                   # linktaker harus online
+pm2 logs linktaker           # ikuti crawl yang sedang jalan
+pm2 logs linktaker --lines 100
+pm2 restart linktaker        # muat ulang setelah git pull
+pm2 stop linktaker           # matikan jadwal
+```
+
+Setelan jadwal ada di blok `env` pada `deploy/ecosystem.config.js`:
+
+| Variabel         | Default | Arti                                              |
+|------------------|---------|---------------------------------------------------|
+| `INTERVAL_HOURS` | `3`     | jarak antar-crawl                                 |
+| `JITTER_MAX`     | `600`   | sebar 0–10 menit sesudah jam bulat                |
+| `RUN_ON_START`   | `1`     | crawl sekali saat PM2 start                       |
+| `VERBOSE`        | `1`     | output crawl ikut masuk `pm2 logs`                |
+
+Parameter crawl-nya sendiri (`ENGINE`, `MAX_PAGES`, `DATE_FROM`, `SUBMIT_*`, …)
+tetap dibaca dari `deploy/linktaker.env` seperti biasa — jangan disalin ke
+`deploy/ecosystem.config.js`. Setelah mengubahnya, muat ulang dengan
+`pm2 restart linktaker --update-env`.
+
+Dua hal yang perlu diketahui:
+
+- **`pm2 restart` saat crawl sedang berjalan akan menghentikan crawl itu.**
+  Loop-nya meneruskan sinyal ke proses anaknya supaya `.linktaker.lock` tidak
+  ditinggalkan proses yatim — konsekuensinya crawl yang sedang jalan hangus dan
+  dimulai lagi dari awal.
+- **Restart beruntun tidak berubah jadi crawl beruntun.** Kalau crawl terakhir
+  belum lewat setengah interval, PM2 start/restart tidak memicu crawl baru; log
+  akan menulis *"run terakhir N menit lalu — menunggu slot berikutnya"*.
+
+Untuk memaksa satu crawl sekarang tanpa mengganggu jadwal, jalankan manual saja
+di terminal — `flock` yang menjaga keduanya tidak bertabrakan:
+
+```bash
+cd ~/linktaker-google && ./deploy/run-linktaker.sh
+```
 
 ## Mengubah parameter crawl
 
@@ -219,7 +303,7 @@ dilakukan `linktaker` sendiri di setiap run, bukan saat file ini disalin.
 ## Kirim otomatis ke submit_batch
 
 Setiap run, setelah crawl selesai, `run-linktaker.sh` memanggil
-`deploy/submit-links.py` yang mengirim link ke endpoint `submit_batch`:
+`python -m linktaker.submit` yang mengirim link ke endpoint `submit_batch`:
 
 ```
 POST http://103.191.17.47:8001/submit_batch/
@@ -228,7 +312,7 @@ Content-Type: application/json
 {"links": ["https://...", "https://..."]}
 ```
 
-Tidak perlu langkah pemasangan tambahan: script itu hanya memakai pustaka
+Tidak perlu langkah pemasangan tambahan: bagian ini hanya memakai pustaka
 standar Python, jadi tidak ada tambahan di `requirements.txt`, dan sudah aktif
 sejak run pertama. Untuk mematikannya, `SUBMIT_ENABLED=0`.
 
@@ -236,7 +320,7 @@ Yang dikerjakannya, dan alasannya:
 
 - **Hanya link baru yang dikirim.** Dengan `DATE_FROM=1d` dan jadwal 3 jam
   sekali, satu berita yang sama muncul di sekitar delapan run berturut-turut.
-  Link yang sudah pernah terkirim dicatat di `state/sent-urls.txt` dan tidak
+  Link yang sudah pernah terkirim dicatat di `data/state/sent-urls.txt` dan tidak
   dikirim lagi selama `SUBMIT_KEEP_DAYS` (30 hari). Perbandingannya memakai
   bentuk URL yang sudah dinormalkan — `http`/`https`, ada/tidaknya `www.`, dan
   garis miring di ujung tidak dianggap sebagai berita yang berbeda; yang
@@ -246,7 +330,7 @@ Yang dikerjakannya, dan alasannya:
   berubah sewaktu-waktu tidak berujung pada link yang dibuang.
 - **Server mati tidak menghilangkan hasil crawl.** Batch yang gagal dicoba
   ulang 3 kali (jeda 2 lalu 4 detik), setelah itu link masuk
-  `state/pending-urls.txt` dan ikut terkirim di run berikutnya. Antrean juga
+  `data/state/pending-urls.txt` dan ikut terkirim di run berikutnya. Antrean juga
   ikut dikosongkan pada run yang crawl-nya gagal atau menghasilkan 0 link.
 - **Kegagalan kirim tidak menandai run sebagai gagal.** Link-nya sudah masuk
   antrean, jadi tidak ada yang perlu dikerjakan orang; cukup terbaca di log.
@@ -258,31 +342,58 @@ Setelannya, semuanya lewat `deploy/linktaker.env` seperti setelan crawl:
 
 | Variabel            | Default | Arti                                        |
 |---------------------|---------|---------------------------------------------|
-| `SUBMIT_ENABLED`    | `1`     | `0` = jangan kirim, hasil tetap ditulis ke `hasil/` |
+| `SUBMIT_ENABLED`    | `1`     | `0` = jangan kirim, hasil tetap ditulis ke `data/hasil/` |
 | `SUBMIT_URL`        | endpoint di atas | tujuan POST                        |
 | `SUBMIT_BATCH_SIZE` | `100`   | link per satu POST (batas server: 100)      |
 | `SUBMIT_RETRIES`    | `3`     | percobaan per batch sebelum masuk antrean   |
 | `SUBMIT_TIMEOUT`    | `30`    | batas waktu per POST, dalam detik           |
 | `SUBMIT_KEEP_DAYS`  | `30`    | berapa lama sebuah link diingat "sudah dikirim" |
 | `SUBMIT_QUEUE_MAX`  | `20000` | batas antrean saat server mati berhari-hari |
-| `SUBMIT_STATE_DIR`  | `state/`| lokasi riwayat kirim & antrean              |
+| `SUBMIT_STATE_DIR`  | `data/state/` | lokasi riwayat kirim & antrean        |
 
 Memeriksa dan menguji:
 
 ```bash
-grep kirim logs/run-*.log | tail          # ringkasan tiap run
-wc -l state/sent-urls.txt                 # sudah berapa link terkirim
-wc -l state/pending-urls.txt              # sisa antrean; 0 baris = beres
+grep kirim data/logs/run-*.log | tail     # ringkasan tiap run
+wc -l data/state/sent-urls.txt            # sudah berapa link terkirim
+wc -l data/state/pending-urls.txt         # sisa antrean; 0 baris = beres
 
 # Lihat apa yang akan dikirim tanpa benar-benar mengirim:
-.venv/bin/python deploy/submit-links.py hasil/links-all-*.txt --dry-run
+.venv/bin/python -m linktaker.submit data/hasil/links-all-*.txt --dry-run
 
 # Kirim ulang satu file hasil secara manual (yang sudah pernah terkirim tetap dilewati):
-.venv/bin/python deploy/submit-links.py hasil/links-all-20260831-1100.txt
+.venv/bin/python -m linktaker.submit data/hasil/links-all-20260831-1100.txt
 ```
 
 Kalau memang perlu mengirim ulang semuanya dari nol, hapus riwayatnya:
-`rm state/sent-urls.txt`.
+`rm data/state/sent-urls.txt`.
+
+## Pindah dari struktur lama
+
+Untuk mesin yang sudah jalan sebelum semua input dan output dipindah ke `data/`.
+Hentikan jadwalnya dulu supaya tidak ada crawl yang berjalan di tengah pindahan:
+
+```bash
+cd ~/linktaker-google
+pm2 stop linktaker                      # atau: systemctl --user stop linktaker.timer
+git pull
+mkdir -p data
+mv -n hasil logs state data/ 2>/dev/null
+rm -f .linktaker.lock
+pm2 restart linktaker --update-env      # atau: systemctl --user start linktaker.timer
+```
+
+Baris `mv` itu yang penting: **`state/` memuat riwayat kirim.** Kalau ditinggal
+di tempat lama, `data/state/sent-urls.txt` mulai dari nol dan seluruh link yang
+masih ada di file hasil akan terkirim sekali lagi ke Kafka.
+
+`keywords.txt` dan `news_domains.txt` tidak perlu disentuh — keduanya di-track
+git, jadi `git pull` sendiri yang memindahkannya ke `data/`. Kalau karena satu
+dan lain hal file lamanya masih tertinggal di root, crawl tetap jalan memakai
+yang itu sambil mencetak pengingat di log.
+
+Perintah lama `deploy/submit-links.py` juga masih bekerja — isinya sekarang
+hanya meneruskan ke `python -m linktaker.submit`.
 
 ## Catatan penting
 
@@ -306,7 +417,7 @@ Kalau memang perlu mengirim ulang semuanya dari nol, hapus riwayatnya:
   memerlukannya. Kalau Anda menyetel `HEADED=1` atau `ON_CAPTCHA=headed` dari
   cron/ssh, script akan minta `sudo apt install -y xvfb` dan berhenti.
 - **Output tidak menumpuk sendiri.** `cli.py` menulis output dengan mode `"w"`,
-  jadi script memberi nama file bertimestamp di `hasil/`. Untuk menggabungkan
-  seluruh hasil unik: `cat hasil/links-*.txt | sort -u > semua-link.txt`.
+  jadi script memberi nama file bertimestamp di `data/hasil/`. Untuk menggabungkan
+  seluruh hasil unik: `cat data/hasil/links-*.txt | sort -u > semua-link.txt`.
 - **Jangan copy `.browser_profile/`** dari laptop Windows. Profil itu berisi
   cookie dan fingerprint yang terikat mesin; biarkan dibuat ulang di Linux.

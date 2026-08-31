@@ -5,3 +5,4 @@
 *.service       text eol=lf
 *.timer         text eol=lf
 *.py            text eol=lf
+*.js            text eol=lf

@@ -39,6 +39,25 @@ def strip_amp(url: str) -> str:
         return url
 
 
+def dedup_key(url: str) -> str:
+    """The form of a URL used for comparing, never for sending or storing.
+
+    Two addresses that lead to the same story are written differently by
+    different search engines: http vs https, with or without `www.`, with or
+    without a trailing slash, sometimes with a #fragment attached. Callers keep
+    the original URL and compare these keys.
+    """
+    try:
+        p = urlparse(url.strip())
+        host = p.netloc.lower()
+        if host.startswith("www."):
+            host = host[4:]
+        path = p.path.rstrip("/") or "/"
+        return urlunparse(("", host, path, "", p.query, ""))
+    except ValueError:
+        return url.strip()
+
+
 def is_social_media(url: str) -> bool:
     """Check if URL belongs to a social media platform."""
     try:

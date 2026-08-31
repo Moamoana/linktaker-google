@@ -1,11 +1,15 @@
 # ---------------- Config ----------------
 # Defaults — most of these can be overridden from the command line.
-URLS_FILE = "url.txt"
-KEYWORDS_FILE = "keywords.txt"       # default for --input
-OUT_FILE = "output.txt"              # default for --output
-PROXIES_FILE = "proxies.txt"         # optional proxy list, used when --proxy is not given
-AUTH_FILE = "auth.json"
-NEWS_DOMAINS_FILE = "news_domains.txt"  # publisher allowlist, used by --news-filter
+# Every input and output lives under data/, which is where the .gitignore rules
+# for generated files point too. Paths stay relative: the tool is run from the
+# project directory, and the deploy scripts `cd` there first.
+DATA_DIR = "data"
+URLS_FILE = "data/url.txt"
+KEYWORDS_FILE = "data/keywords.txt"       # default for --input
+OUT_FILE = "data/output.txt"              # default for --output
+PROXIES_FILE = "data/proxies.txt"         # optional proxy list, used when --proxy is not given
+AUTH_FILE = "data/auth.json"
+NEWS_DOMAINS_FILE = "data/news_domains.txt"  # publisher allowlist, used by --news-filter
 
 MAX_PAGES_PER_SEARCH = None          # None = crawl every page (default for --max-pages)
 DEFAULT_SORT = "relevance"           # default for --sort ("relevance" or "latest")
@@ -131,3 +135,16 @@ USER_AGENTS = [
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
 ]
+
+
+# ---------------- Pengiriman hasil (submit_batch) ----------------
+# Dipakai `linktaker.submit`, yang mengirim hasil crawl ke endpoint pengumpul.
+# Semuanya bisa ditimpa lewat environment variable dengan nama yang sama —
+# lihat linktaker/submit/settings.py dan deploy/linktaker.env.example.
+SUBMIT_URL = "http://103.191.17.47:8001/submit_batch/"
+SUBMIT_BATCH_SIZE = 100      # batas server: batch di atas 100 URL ditolak 400
+SUBMIT_RETRIES = 3           # percobaan per batch sebelum link masuk antrean
+SUBMIT_TIMEOUT = 30          # detik per POST
+SUBMIT_STATE_DIR = "data/state"
+SUBMIT_KEEP_DAYS = 30        # umur ingatan "sudah pernah dikirim"
+SUBMIT_QUEUE_MAX = 20000     # batas antrean saat endpoint mati berhari-hari

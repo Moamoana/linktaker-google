@@ -2,8 +2,8 @@
 # Satu kali crawl LinkTaker, aman dipanggil dari cron / systemd timer.
 #
 # Yang diurus script ini dan tidak diurus `python linktaker.py` sendiri:
-#   - cd ke folder project (semua path di tool ini relatif: keywords.txt,
-#     news_domains.txt, .browser_profile/)
+#   - cd ke folder project (semua path di tool ini relatif: data/keywords.txt,
+#     data/news_domains.txt, .browser_profile/)
 #   - rentang tanggal dihitung dari hari ini, bukan tanggal mati di argumen
 #   - output diberi timestamp, karena cli.py menulis dengan mode "w" alias
 #     menimpa file lama
@@ -29,8 +29,9 @@ fi
 # shell interaktif, dan cron maupun systemd tidak menyediakannya.
 # Untuk conda, arahkan saja ke python di dalam env-nya; script tidak peduli.
 PYTHON_BIN="${PYTHON_BIN:-$APP_DIR/.venv/bin/python}"
-OUT_DIR="${OUT_DIR:-$APP_DIR/hasil}"
-LOG_DIR="${LOG_DIR:-$APP_DIR/logs}"
+OUT_DIR="${OUT_DIR:-$APP_DIR/data/hasil}"
+LOG_DIR="${LOG_DIR:-$APP_DIR/data/logs}"
+INPUT="${INPUT:-data/keywords.txt}"   # daftar keyword yang dipakai
 
 ENGINE="${ENGINE:-all}"        # google | yahoo | bing | all
 MODE="${MODE:-both}"           # web | nws | both
@@ -54,15 +55,15 @@ HEADED="${HEADED:-0}"          # 1 = paksa pakai jendela sepanjang run
 ON_CAPTCHA="${ON_CAPTCHA:-skip}"   # skip | headed
 
 # Kirim hasil ke endpoint submit_batch setelah crawl selesai — lihat
-# deploy/submit-links.py. SUBMIT_ENABLED=0 mematikannya (hasil tetap ditulis
+# linktaker/submit/. SUBMIT_ENABLED=0 mematikannya (hasil tetap ditulis
 # ke file seperti biasa).
 SUBMIT_ENABLED="${SUBMIT_ENABLED:-1}"
 # Riwayat "sudah pernah dikirim" dan antrean kiriman yang gagal. Absolut,
 # bukan relatif, supaya isinya tidak berpindah kalau APP_DIR diubah.
-export SUBMIT_STATE_DIR="${SUBMIT_STATE_DIR:-$APP_DIR/state}"
+export SUBMIT_STATE_DIR="${SUBMIT_STATE_DIR:-$APP_DIR/data/state}"
 # Sisanya (SUBMIT_URL, SUBMIT_BATCH_SIZE, SUBMIT_RETRIES, SUBMIT_TIMEOUT,
 # SUBMIT_KEEP_DAYS, SUBMIT_QUEUE_MAX) hanya diteruskan kalau memang diisi di
-# linktaker.env; kalau tidak, submit-links.py memakai default-nya sendiri —
+# linktaker.env; kalau tidak, linktaker.submit memakai default-nya sendiri —
 # jadi nilai bawaan tidak perlu ditulis di dua tempat.
 for _v in SUBMIT_URL SUBMIT_BATCH_SIZE SUBMIT_RETRIES SUBMIT_TIMEOUT \
           SUBMIT_KEEP_DAYS SUBMIT_QUEUE_MAX; do
@@ -70,7 +71,7 @@ for _v in SUBMIT_URL SUBMIT_BATCH_SIZE SUBMIT_RETRIES SUBMIT_TIMEOUT \
 done
 
 cd "$APP_DIR"
-mkdir -p "$OUT_DIR" "$LOG_DIR"
+mkdir -p "$OUT_DIR" "$LOG_DIR" "$APP_DIR/data"
 
 # Gagal cepat dan jelas kalau path interpreter salah — tanpa ini errornya baru muncul
 # 3 jam sekali di dalam log sebagai "command not found".
@@ -111,7 +112,7 @@ if ! command -v flock >/dev/null 2>&1; then
     exit 1
 fi
 
-exec 9>"$APP_DIR/.linktaker.lock"
+exec 9>"$APP_DIR/data/.linktaker.lock"
 if ! flock -n 9; then
     echo "$(date -Is) run sebelumnya masih berjalan — dilewati" >>"$LOG_DIR/skipped.log"
     # Dari cron ini memang harus senyap, tapi orang yang baru menekan Enter
@@ -121,7 +122,7 @@ if ! flock -n 9; then
     exit 0
 fi
 
-ARGS=(--input keywords.txt --engine "$ENGINE" --mode "$MODE" --sort "$SORT"
+ARGS=(--input "$INPUT" --engine "$ENGINE" --mode "$MODE" --sort "$SORT"
       --from "$DATE_FROM" --until "$DATE_UNTIL" --output "$OUT"
       --on-captcha "$ON_CAPTCHA")
 if [ "$HEADED" = "1" ]; then ARGS+=(--headed); else ARGS+=(--headless); fi
@@ -181,9 +182,9 @@ fi
 # ditangani sendiri.
 if [ "$SUBMIT_ENABLED" = "1" ]; then
     if [ "$INTERACTIVE" = "1" ]; then
-        "$PYTHON_BIN" deploy/submit-links.py "$OUT" 2>&1 | tee -a "$LOG" || true
+        "$PYTHON_BIN" -m linktaker.submit "$OUT" 2>&1 | tee -a "$LOG" || true
     else
-        "$PYTHON_BIN" deploy/submit-links.py "$OUT" >>"$LOG" 2>&1 || true
+        "$PYTHON_BIN" -m linktaker.submit "$OUT" >>"$LOG" 2>&1 || true
     fi
 fi
 

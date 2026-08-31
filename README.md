@@ -130,6 +130,7 @@ Sejak refactor, `linktaker.py` (dulu 1 file ~1000 baris) sudah dipecah jadi pack
 | `cli.py` | Argparse (`build_parser`, `parse_args`) + `main()` — merangkai semua modul jadi alur end-to-end | Semua modul di atas |
 | `__main__.py` | Entry point untuk `python -m linktaker` | `cli` |
 | `linktaker.py` (root) | Entry point untuk `python linktaker.py` | `cli` |
+| `submit/` | Pengiriman hasil ke endpoint pengumpul: `settings.py` (setelan), `state.py` (riwayat kirim + antrean), `client.py` (batching/retry), `cli.py` (`python -m linktaker.submit`) | `config`, `url_utils` |
 
 **Alur import**: `cli.py` ada di lapisan paling atas dan memanggil semua modul lain. Di bawahnya, `fetchers.py` dan `browser.py` tidak tahu-menahu soal engine mana yang dipakai — keduanya hanya membaca field dari objek `Engine`. Modul di dalam `engines/` tidak saling bergantung, jadi dua orang bisa menggarap engine berbeda tanpa bentrok.
 
@@ -192,12 +193,12 @@ Nilai default ada di [`linktaker/config.py`](linktaker/config.py). Sebagian besa
 
 | Variable | Default | Deskripsi |
 |---|---|---|
-| `KEYWORDS_FILE` | `"keywords.txt"` | Default `--input` — file berisi keyword saja, satu per baris |
+| `KEYWORDS_FILE` | `"data/keywords.txt"` | Default `--input` — file berisi keyword saja, satu per baris |
 | `URLS_FILE` | `"url.txt"` | URL pencarian Google siap pakai (satu per baris), fallback kalau file `--input` tidak ada |
-| `OUT_FILE` | `"output.txt"` | Default `--output` — file untuk menyimpan link hasil ekstraksi |
+| `OUT_FILE` | `"data/output.txt"` | Default `--output` — file untuk menyimpan link hasil ekstraksi |
 | `PROXIES_FILE` | `"proxies.txt"` | Daftar proxy, dipakai hanya kalau `--proxy` tidak diberikan |
 | `AUTH_FILE` | `"auth.json"` | File kredensial autentikasi (opsional) |
-| `NEWS_DOMAINS_FILE` | `"news_domains.txt"` | Default `--news-domains` — allowlist penerbit berita |
+| `NEWS_DOMAINS_FILE` | `"data/news_domains.txt"` | Default `--news-domains` — allowlist penerbit berita |
 
 ### Pengaturan Scraping
 
@@ -284,17 +285,17 @@ python -m linktaker --input keyword1.txt
 | Argumen | Wajib | Default | Deskripsi |
 |---|---|---|---|
 | `--engine {google,bing,yahoo,all}` | tidak | `google` | Search engine yang di-crawl. `all` menjalankan Google → Yahoo → Bing berurutan dan menggabung hasilnya ke satu `--output` |
-| `--input FILE` | tidak | `keywords.txt` | File txt berisi keyword, satu per baris |
+| `--input FILE` | tidak | `data/keywords.txt` | File txt berisi keyword, satu per baris |
 | `--from DATE` | tidak | — | Ambil hasil mulai tanggal ini. Terima tanggal pasti (`2026-08-18`) maupun relatif (`w`, `7d`, `3m`). Tanpa `--from`/`--until`, pencarian jalan tanpa filter tanggal. Lihat [Tanggal Relatif](#tanggal-relatif) |
 | `--until DATE` | tidak | — | Ambil hasil sampai tanggal ini. Format sama dengan `--from` |
 | `--sort {latest,relevance}` | tidak | `relevance` | `latest` = urut terbaru, `relevance` = urutan default engine. Lihat [catatan per engine](#search-engine-google-bing--yahoo) |
 | `--geo COUNTRY` | tidak | ikut lokasi browser | Cari seolah-olah dari negara ini. Terima kode ISO (`my`) maupun nama negara (`malaysia`, `jerman`). Lihat [Pencarian per Negara](#pencarian-per-negara---geo) |
-| `--output FILE` | tidak | `output.txt` | File tujuan hasil link |
+| `--output FILE` | tidak | `data/output.txt` | File tujuan hasil link |
 | `--max-pages N` | tidak | semua | Maksimum halaman hasil yang di-crawl per keyword |
 | `--proxy URL` | tidak | tanpa proxy | Proxy manual, mis. `http://user:password@proxycrawler.dashboard.nolimit.id:2570` |
 | `--mode {web,nws,both}` | tidak | `web` | `web` = tab **Semua/All**, `nws` = tab **Berita**, `both` = crawl kedua tab lalu digabung. Lihat [Tab pencarian](#tab-pencarian-semua-vs-berita) |
 | `--news-filter {smart,strict,off}` | tidak | `smart` | Seberapa ketat output disaring jadi link berita saja. Lihat [Filter Berita](#filter-berita-news-filter) |
-| `--news-domains FILE` | tidak | `news_domains.txt` | File allowlist penerbit, satu domain per baris |
+| `--news-domains FILE` | tidak | `data/news_domains.txt` | File allowlist penerbit, satu domain per baris |
 | `--headless` / `--headed` | tidak | `--headless` | Jalan tanpa / dengan jendela browser. Lihat [Headless & CAPTCHA](#headless--captcha) |
 | `--on-captcha {headed,skip}` | tidak | `headed` | Yang dilakukan run headless saat kena CAPTCHA. `skip` untuk run terjadwal |
 | `-h`, `--help` | — | — | Tampilkan bantuan |
@@ -324,7 +325,7 @@ https://www.bing.com/search?q=kpk&filters=ex1%3A%22ez5_20673_20681%22
 
 ### Langkah 3: Lihat Hasil
 
-Semua link yang berhasil diekstrak tersimpan di file `--output` (default `output.txt`):
+Semua link yang berhasil diekstrak tersimpan di file `--output` (default `data/output.txt`):
 
 ```text
 https://example.com/article/1
@@ -502,7 +503,7 @@ https://www.google.com/search?q=tech+news&tbm=nws
 https://www.google.com/search?q=python+tutorial
 ```
 
-### File Output (via `--output`, default `output.txt`)
+### File Output (via `--output`, default `data/output.txt`)
 
 File hasil berisi semua URL unik yang ditemukan, sudah dibersihkan dari AMP dan di-sort:
 
@@ -654,11 +655,11 @@ Urutannya saat `--on-captcha headed` (default):
   jadi jauh lebih sering sampai crawl bolak-balik relaunch, `--headed` justru
   lebih cepat. Ukur dulu untuk keyword Anda, jangan diasumsikan.
 
-Untuk menjalankan ini otomatis di Linux, lihat [`deploy/INSTALL-LINUX.md`](deploy/INSTALL-LINUX.md).
+Untuk menjalankan ini otomatis di Linux, lihat [`docs/INSTALL-LINUX.md`](docs/INSTALL-LINUX.md).
 
 Jadwal itu juga mengirim hasilnya sendiri: tiap run,
-`deploy/submit-links.py` mem-POST link yang belum pernah dikirim ke endpoint
-`submit_batch` — lihat [Kirim otomatis ke submit_batch](deploy/INSTALL-LINUX.md#kirim-otomatis-ke-submit_batch).
+`python -m linktaker.submit` mem-POST link yang belum pernah dikirim ke endpoint
+`submit_batch` — lihat [Kirim otomatis ke submit_batch](docs/INSTALL-LINUX.md#kirim-otomatis-ke-submit_batch).
 
 ---
 
@@ -970,21 +971,55 @@ linktaker-google/
 │       ├── bing.py       # Bing Search / Bing News
 │       ├── yahoo.py      # Yahoo Search
 │       └── news_rss.py   # Google News RSS (opsional)
-├── deploy/              # Jadwal otomatis di Linux (systemd timer + runner)
-│   ├── run-linktaker.sh
-│   ├── submit-links.py  # Kirim hasil tiap run ke endpoint submit_batch
-│   ├── linktaker.service
-│   ├── linktaker.timer
-│   └── INSTALL-LINUX.md
-├── requirements.txt     # Daftar dependencies Python
-├── news_domains.txt     # (Dibuat user) Allowlist penerbit — default `--news-domains`
-├── keywords.txt         # (Dibuat user) Input keyword — default `--input`
-├── url.txt              # (Dibuat user, opsional) Input URL pencarian manual
-├── output.txt           # (Auto-generated) Hasil link — default `--output`
-├── proxies.txt          # (Opsional) Daftar proxy
-├── auth.json            # (Opsional) Kredensial autentikasi
-└── README.md            # Dokumentasi ini
+│   └── submit/           # Pengiriman hasil ke endpoint pengumpul
+│       ├── __init__.py
+│       ├── __main__.py   # `python -m linktaker.submit`
+│       ├── cli.py        # Perintah kirim: baca file, saring, laporkan
+│       ├── client.py     # Batching, retry, pecah-ulang batch yang ditolak
+│       ├── settings.py   # SUBMIT_* dari config.py, ditimpa environment
+│       └── state.py      # Riwayat kirim + antrean yang tertunda
+├── deploy/               # Semua yang berurusan dengan menjalankan di server
+│   ├── run-linktaker.sh  # Satu kali crawl + kirim, dipanggil penjadwal
+│   ├── pm2-loop.sh       # Penjadwal untuk PM2
+│   ├── ecosystem.config.js
+│   ├── submit-links.py   # Pembungkus lama -> linktaker.submit
+│   ├── linktaker.env.example
+│   └── systemd/
+│       ├── linktaker.service
+│       └── linktaker.timer
+├── docs/
+│   └── INSTALL-LINUX.md  # Pemasangan & penjadwalan di Linux
+├── tests/                # pytest — logika murni, tanpa jaringan/browser
+├── data/                 # Semua input dan output
+│   ├── keywords.txt      # Input keyword — default `--input`
+│   ├── news_domains.txt  # Allowlist penerbit — default `--news-domains`
+│   ├── hasil/            # (Auto) Hasil per run, bertimestamp
+│   ├── logs/             # (Auto) Log run dan PM2
+│   └── state/            # (Auto) Riwayat kirim + antrean
+├── pyproject.toml        # Metadata paket, entry point, setelan pytest
+├── requirements.txt      # Daftar dependencies Python
+└── README.md             # Dokumentasi ini
 ```
+
+---
+
+## Test
+
+```bash
+.venv/bin/pip install -e ".[dev]"      # sekali — memasang pytest
+.venv/bin/python -m pytest
+```
+
+Isinya hanya logika murni: penyaringan duplikat dan antrean pengiriman,
+pemecahan batch, normalisasi URL, gerbang filter berita, parsing tanggal
+relatif, dan resolusi `--geo`. Tidak ada yang membuka browser atau menyentuh
+jaringan, jadi seluruh suite selesai dalam hitungan detik dan aman dijalankan
+di mana saja.
+
+Bagian yang memang berurusan dengan jaringan diuji lewat penyuntikan: `Submitter`
+menerima fungsi `post` apa saja, jadi perilaku saat server menolak batch atau
+mati di tengah jalan bisa diuji tanpa server sungguhan — lihat
+`tests/test_submit_client.py`.
 
 ---
 
