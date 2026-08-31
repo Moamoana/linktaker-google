@@ -53,6 +53,22 @@ KEEP_DAYS="${KEEP_DAYS:-14}"   # umur maksimum file hasil & log
 HEADED="${HEADED:-0}"          # 1 = paksa pakai jendela sepanjang run
 ON_CAPTCHA="${ON_CAPTCHA:-skip}"   # skip | headed
 
+# Kirim hasil ke endpoint submit_batch setelah crawl selesai — lihat
+# deploy/submit-links.py. SUBMIT_ENABLED=0 mematikannya (hasil tetap ditulis
+# ke file seperti biasa).
+SUBMIT_ENABLED="${SUBMIT_ENABLED:-1}"
+# Riwayat "sudah pernah dikirim" dan antrean kiriman yang gagal. Absolut,
+# bukan relatif, supaya isinya tidak berpindah kalau APP_DIR diubah.
+export SUBMIT_STATE_DIR="${SUBMIT_STATE_DIR:-$APP_DIR/state}"
+# Sisanya (SUBMIT_URL, SUBMIT_BATCH_SIZE, SUBMIT_RETRIES, SUBMIT_TIMEOUT,
+# SUBMIT_KEEP_DAYS, SUBMIT_QUEUE_MAX) hanya diteruskan kalau memang diisi di
+# linktaker.env; kalau tidak, submit-links.py memakai default-nya sendiri —
+# jadi nilai bawaan tidak perlu ditulis di dua tempat.
+for _v in SUBMIT_URL SUBMIT_BATCH_SIZE SUBMIT_RETRIES SUBMIT_TIMEOUT \
+          SUBMIT_KEEP_DAYS SUBMIT_QUEUE_MAX; do
+    eval "[ -n \"\${$_v:-}\" ]" && export "$_v"
+done
+
 cd "$APP_DIR"
 mkdir -p "$OUT_DIR" "$LOG_DIR"
 
@@ -154,6 +170,21 @@ elif [ -s "$OUT" ]; then
     say "$(date -Is) SELESAI — $(wc -l <"$OUT") link di $OUT"
 else
     say "$(date -Is) SELESAI tapi 0 link (kemungkinan kena CAPTCHA)"
+fi
+
+# Kirim ke submit_batch. Dijalankan juga saat crawl gagal atau 0 link, karena
+# antrean dari run yang gagal kirim sebelumnya baru bisa habis di sini.
+#
+# Kegagalan kirim sengaja tidak mengubah exit code script: link yang belum
+# terkirim sudah masuk antrean dan ikut jalan 3 jam lagi, jadi menandai run
+# ini "failed" hanya membuat systemd/cron ribut untuk sesuatu yang sudah
+# ditangani sendiri.
+if [ "$SUBMIT_ENABLED" = "1" ]; then
+    if [ "$INTERACTIVE" = "1" ]; then
+        "$PYTHON_BIN" deploy/submit-links.py "$OUT" 2>&1 | tee -a "$LOG" || true
+    else
+        "$PYTHON_BIN" deploy/submit-links.py "$OUT" >>"$LOG" 2>&1 || true
+    fi
 fi
 
 # Buang hasil dan log yang sudah lewat umur.

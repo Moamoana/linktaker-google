@@ -19,3 +19,6 @@ hasil/
 
 # Setelan lokal per-mesin untuk deploy/run-linktaker.sh (contohnya tetap di repo)
 deploy/linktaker.env
+
+# Riwayat kirim & antrean dari deploy/submit-links.py
+state/

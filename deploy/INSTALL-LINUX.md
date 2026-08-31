@@ -216,6 +216,72 @@ terus melebar setiap hari sampai crawl-nya makin lambat dan makin rawan CAPTCHA,
 sedangkan `DATE_FROM=1d` menjaga lebar jendelanya tetap. Perhitungannya
 dilakukan `linktaker` sendiri di setiap run, bukan saat file ini disalin.
 
+## Kirim otomatis ke submit_batch
+
+Setiap run, setelah crawl selesai, `run-linktaker.sh` memanggil
+`deploy/submit-links.py` yang mengirim link ke endpoint `submit_batch`:
+
+```
+POST http://103.191.17.47:8001/submit_batch/
+Content-Type: application/json
+
+{"links": ["https://...", "https://..."]}
+```
+
+Tidak perlu langkah pemasangan tambahan: script itu hanya memakai pustaka
+standar Python, jadi tidak ada tambahan di `requirements.txt`, dan sudah aktif
+sejak run pertama. Untuk mematikannya, `SUBMIT_ENABLED=0`.
+
+Yang dikerjakannya, dan alasannya:
+
+- **Hanya link baru yang dikirim.** Dengan `DATE_FROM=1d` dan jadwal 3 jam
+  sekali, satu berita yang sama muncul di sekitar delapan run berturut-turut.
+  Link yang sudah pernah terkirim dicatat di `state/sent-urls.txt` dan tidak
+  dikirim lagi selama `SUBMIT_KEEP_DAYS` (30 hari). Perbandingannya memakai
+  bentuk URL yang sudah dinormalkan — `http`/`https`, ada/tidaknya `www.`, dan
+  garis miring di ujung tidak dianggap sebagai berita yang berbeda; yang
+  dikirim tetap URL aslinya.
+- **Dipecah per 200 link,** bukan satu body raksasa berisi ratusan link.
+- **Server mati tidak menghilangkan hasil crawl.** Batch yang gagal dicoba
+  ulang 3 kali (jeda 2 lalu 4 detik), setelah itu link masuk
+  `state/pending-urls.txt` dan ikut terkirim di run berikutnya. Antrean juga
+  ikut dikosongkan pada run yang crawl-nya gagal atau menghasilkan 0 link.
+- **Kegagalan kirim tidak menandai run sebagai gagal.** Link-nya sudah masuk
+  antrean, jadi tidak ada yang perlu dikerjakan orang; cukup terbaca di log.
+  Yang *tidak* diantrekan adalah penolakan 4xx (mis. URL endpoint salah ketik):
+  mengulangnya tidak akan mengubah hasil, jadi link-nya dibuang dan alasannya
+  ditulis di log.
+
+Setelannya, semuanya lewat `deploy/linktaker.env` seperti setelan crawl:
+
+| Variabel            | Default | Arti                                        |
+|---------------------|---------|---------------------------------------------|
+| `SUBMIT_ENABLED`    | `1`     | `0` = jangan kirim, hasil tetap ditulis ke `hasil/` |
+| `SUBMIT_URL`        | endpoint di atas | tujuan POST                        |
+| `SUBMIT_BATCH_SIZE` | `200`   | link per satu POST                          |
+| `SUBMIT_RETRIES`    | `3`     | percobaan per batch sebelum masuk antrean   |
+| `SUBMIT_TIMEOUT`    | `30`    | batas waktu per POST, dalam detik           |
+| `SUBMIT_KEEP_DAYS`  | `30`    | berapa lama sebuah link diingat "sudah dikirim" |
+| `SUBMIT_QUEUE_MAX`  | `20000` | batas antrean saat server mati berhari-hari |
+| `SUBMIT_STATE_DIR`  | `state/`| lokasi riwayat kirim & antrean              |
+
+Memeriksa dan menguji:
+
+```bash
+grep kirim logs/run-*.log | tail          # ringkasan tiap run
+wc -l state/sent-urls.txt                 # sudah berapa link terkirim
+wc -l state/pending-urls.txt              # sisa antrean; 0 baris = beres
+
+# Lihat apa yang akan dikirim tanpa benar-benar mengirim:
+.venv/bin/python deploy/submit-links.py hasil/links-all-*.txt --dry-run
+
+# Kirim ulang satu file hasil secara manual (yang sudah pernah terkirim tetap dilewati):
+.venv/bin/python deploy/submit-links.py hasil/links-all-20260831-1100.txt
+```
+
+Kalau memang perlu mengirim ulang semuanya dari nol, hapus riwayatnya:
+`rm state/sent-urls.txt`.
+
 ## Catatan penting
 
 - **Run terjadwal jalan headless dan melewati CAPTCHA.** Defaultnya

@@ -656,6 +656,10 @@ Urutannya saat `--on-captcha headed` (default):
 
 Untuk menjalankan ini otomatis di Linux, lihat [`deploy/INSTALL-LINUX.md`](deploy/INSTALL-LINUX.md).
 
+Jadwal itu juga mengirim hasilnya sendiri: tiap run,
+`deploy/submit-links.py` mem-POST link yang belum pernah dikirim ke endpoint
+`submit_batch` — lihat [Kirim otomatis ke submit_batch](deploy/INSTALL-LINUX.md#kirim-otomatis-ke-submit_batch).
+
 ---
 
 ## Anti-Deteksi & Stealth
@@ -968,6 +972,7 @@ linktaker-google/
 │       └── news_rss.py   # Google News RSS (opsional)
 ├── deploy/              # Jadwal otomatis di Linux (systemd timer + runner)
 │   ├── run-linktaker.sh
+│   ├── submit-links.py  # Kirim hasil tiap run ke endpoint submit_batch
 │   ├── linktaker.service
 │   ├── linktaker.timer
 │   └── INSTALL-LINUX.md
