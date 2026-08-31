@@ -14,7 +14,8 @@ Yang diurus di sini dan tidak diurus curl:
   - Link yang sudah pernah terkirim tidak dikirim lagi. Jadwal 3 jam sekali
     dengan --from 1d membuat satu berita yang sama muncul di +-8 run berturut-
     turut; tanpa filter ini topik Kafka menerima delapan salinan tiap berita.
-  - Kiriman dipecah per SUBMIT_BATCH_SIZE link, bukan satu body raksasa.
+  - Kiriman dipecah per SUBMIT_BATCH_SIZE link (server menolak batch di atas
+    100 URL), dan batch yang tetap ditolak dipecah dua lalu dicoba lagi.
   - Kalau server sedang mati, link masuk antrean dan ikut terkirim pada run
     berikutnya — tidak ada hasil crawl yang hilang karena jaringan.
 
@@ -32,7 +33,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urlsplit, urlunsplit
 
 URL = os.environ.get("SUBMIT_URL", "http://103.191.17.47:8001/submit_batch/")
-BATCH_SIZE = int(os.environ.get("SUBMIT_BATCH_SIZE", "200"))
+BATCH_SIZE = int(os.environ.get("SUBMIT_BATCH_SIZE", "100"))
 RETRIES = int(os.environ.get("SUBMIT_RETRIES", "3"))
 TIMEOUT = float(os.environ.get("SUBMIT_TIMEOUT", "30"))
 STATE_DIR = os.environ.get("SUBMIT_STATE_DIR", "state")
@@ -202,24 +203,46 @@ def main(argv):
         return 0
 
     ok_count, failed, dropped = 0, [], 0
-    batches = [links[i:i + BATCH_SIZE] for i in range(0, len(links), BATCH_SIZE)]
+    pending = [links[i:i + BATCH_SIZE] for i in range(0, len(links), BATCH_SIZE)]
+    total = len(pending)
     stamp = datetime.now().astimezone().isoformat(timespec="seconds")
+    # Satu link yang ditolak sendirian membuktikan yang salah bukan ukuran
+    # batch, melainkan endpoint atau formatnya. Sejak itu tidak ada gunanya
+    # memecah apa pun lagi — sisanya dibuang tanpa membombardir server.
+    single_rejected = False
+    n = 0
 
-    for n, batch in enumerate(batches, 1):
+    while pending:
+        batch = pending.pop(0)
         # Batch sesudah kegagalan jaringan tidak perlu ikut menunggu timeout
         # satu per satu; server yang mati akan tetap mati 30 detik lagi.
         if failed:
             failed.extend(batch)
             continue
-        log("batch %d/%d (%d link) -> %s" % (n, len(batches), len(batch), URL))
+        if single_rejected:
+            dropped += len(batch)
+            continue
+        n += 1
+        log("batch %d/%d (%d link) -> %s" % (n, total, len(batch), URL))
         ok, retryable = post(batch)
         if ok:
             ok_count += len(batch)
             sent_rows.extend((stamp, key_of(u)) for u in batch)
         elif retryable:
             failed.extend(batch)
+        elif len(batch) > 1:
+            # Penolakan 4xx pada batch yang berisi banyak link biasanya soal
+            # ukuran — server ini menolak batch di atas 100 URL. Dipecah dua
+            # lalu dicoba lagi, jadi batas sisi server yang berubah tidak
+            # pernah berujung pada link yang dibuang.
+            half = len(batch) // 2
+            log("  dipecah jadi %d + %d link, lalu dicoba lagi" % (half, len(batch) - half))
+            pending[:0] = [batch[:half], batch[half:]]
+            total += 1
         else:
-            dropped += len(batch)
+            log("  dibuang: %s" % batch[0])
+            dropped += 1
+            single_rejected = True
 
     # Riwayat ditulis lebih dulu: kalau proses mati di antara dua penulisan,
     # link yang terlanjur terkirim tidak ikut dikirim ulang.

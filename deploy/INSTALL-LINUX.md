@@ -241,7 +241,9 @@ Yang dikerjakannya, dan alasannya:
   bentuk URL yang sudah dinormalkan — `http`/`https`, ada/tidaknya `www.`, dan
   garis miring di ujung tidak dianggap sebagai berita yang berbeda; yang
   dikirim tetap URL aslinya.
-- **Dipecah per 200 link,** bukan satu body raksasa berisi ratusan link.
+- **Dipecah per 100 link** — batas endpoint-nya memang 100 URL per batch. Batch
+  yang tetap ditolak dipecah dua lalu dicoba lagi, jadi batas sisi server yang
+  berubah sewaktu-waktu tidak berujung pada link yang dibuang.
 - **Server mati tidak menghilangkan hasil crawl.** Batch yang gagal dicoba
   ulang 3 kali (jeda 2 lalu 4 detik), setelah itu link masuk
   `state/pending-urls.txt` dan ikut terkirim di run berikutnya. Antrean juga
@@ -258,7 +260,7 @@ Setelannya, semuanya lewat `deploy/linktaker.env` seperti setelan crawl:
 |---------------------|---------|---------------------------------------------|
 | `SUBMIT_ENABLED`    | `1`     | `0` = jangan kirim, hasil tetap ditulis ke `hasil/` |
 | `SUBMIT_URL`        | endpoint di atas | tujuan POST                        |
-| `SUBMIT_BATCH_SIZE` | `200`   | link per satu POST                          |
+| `SUBMIT_BATCH_SIZE` | `100`   | link per satu POST (batas server: 100)      |
 | `SUBMIT_RETRIES`    | `3`     | percobaan per batch sebelum masuk antrean   |
 | `SUBMIT_TIMEOUT`    | `30`    | batas waktu per POST, dalam detik           |
 | `SUBMIT_KEEP_DAYS`  | `30`    | berapa lama sebuah link diingat "sudah dikirim" |
