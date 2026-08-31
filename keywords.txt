@@ -3,4 +3,12 @@
 #   python linktaker.py --input keywords.txt --from 2026-08-08 --until 2026-08-16 --sort latest
 # Lines starting with # are ignored.
 
+
+Malaysia
+mnrb
+takaful malaysia
+kuala lumpur
+penang
+malaysian finance
 karhutla
+kebakaran hutan
