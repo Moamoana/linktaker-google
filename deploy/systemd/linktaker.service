@@ -7,6 +7,9 @@ Wants=network-online.target
 Type=oneshot
 WorkingDirectory=%h/linktaker-google
 ExecStart=%h/linktaker-google/deploy/run-linktaker.sh
+# 75 = run dilewati karena run sebelumnya masih memegang lock. Itu kejadian
+# normal, bukan kegagalan unit — lihat flock di run-linktaker.sh.
+SuccessExitStatus=75
 # Satu run bisa lama kalau --max-pages besar; bunuh kalau lewat 2 jam supaya
 # tidak menumpuk dengan jadwal berikutnya.
 TimeoutStartSec=7200

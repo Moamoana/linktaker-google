@@ -64,12 +64,21 @@ berhenti() {
 }
 trap berhenti INT TERM
 
+# Exit code run-linktaker.sh saat sebuah run dilewati karena lock masih
+# dipegang proses lain. Bukan kegagalan, tapi juga bukan crawl yang selesai.
+DILEWATI=75
+
+# Exit code anak yang terakhir ditunggu. Dulu dibuang begitu saja, sehingga
+# tidak ada cara membedakan crawl yang benar-benar jalan dari yang dilewati.
+status_anak=0
+
 # Jalankan di background lalu `wait`, bukan di foreground: bash baru menjalankan
 # trap setelah perintah foreground selesai, jadi tanpa pola ini sinyal stop dari
 # PM2 baru terasa setelah crawl 20 menit itu kelar.
 tunggu_anak() {
     child=$!
-    wait "$child" || true
+    status_anak=0
+    wait "$child" || status_anak=$?
     child=""
 }
 
@@ -77,9 +86,39 @@ crawl() {
     say "mulai crawl"
     "$APP_DIR/deploy/run-linktaker.sh" &
     tunggu_anak
+
+    if [ "$status_anak" = "$DILEWATI" ]; then
+        # Jangan cap ini sebagai crawl yang selesai. Sebelumnya stempel waktu
+        # ditulis apa pun yang terjadi, jadi run yang dilewati tetap menggeser
+        # jadwal tiga jam ke depan seolah-olah crawl sudah jalan — dan slot itu
+        # hilang tanpa jejak di mana pun. Pemicu paling sering: `pm2 restart`,
+        # karena loop yang baru mencoba crawl beberapa milidetik sebelum proses
+        # lama sempat melepas lock-nya.
+        say "run dilewati — lock masih dipegang proses lain"
+        return 1
+    fi
+
     mkdir -p "$(dirname "$STAMP_FILE")"
     date +%s >"$STAMP_FILE"
     say "crawl selesai"
+    return 0
+}
+
+# Lock yang bentrok biasanya urusan detik, bukan jam — proses lama sedang mati
+# dan belum melepas fd-nya. Menunggu slot berikutnya untuk itu berarti membuang
+# tiga jam, jadi coba lagi sebentar dulu.
+crawl_dengan_ulang() {
+    local percobaan
+    for percobaan in 1 2 3; do
+        if crawl; then
+            return 0
+        fi
+        [ "$sedang_berhenti" = "1" ] && return 1
+        say "coba lagi 60 detik lagi (percobaan $percobaan/3)"
+        tidur 60
+    done
+    say "masih terkunci setelah 3 percobaan — menunggu slot berikutnya"
+    return 1
 }
 
 tidur() {
@@ -106,7 +145,7 @@ if [ "$RUN_ON_START" = "1" ]; then
     terakhir=$(cat "$STAMP_FILE" 2>/dev/null || echo 0)
     selisih=$(( $(date +%s) - terakhir ))
     if [ "$selisih" -ge $((INTERVAL / 2)) ]; then
-        crawl
+        crawl_dengan_ulang || true
     else
         say "run terakhir $((selisih / 60)) menit lalu — menunggu slot berikutnya"
     fi
@@ -130,5 +169,5 @@ while true; do
 
     say "crawl berikutnya $(date -d "+${jeda} seconds" +%H:%M 2>/dev/null || echo "dalam $((jeda / 60)) menit")"
     tidur "$jeda"
-    crawl
+    crawl_dengan_ulang || true
 done

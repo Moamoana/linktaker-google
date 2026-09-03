@@ -6,3 +6,8 @@
 *.timer         text eol=lf
 *.py            text eol=lf
 *.js            text eol=lf
+
+# Sourced oleh bash (deploy/linktaker.env) dan dibaca di Linux — CRLF membuat
+# nilai variabel membawa carriage return di ujungnya.
+*.example       text eol=lf
+*.md            text eol=lf

@@ -1,8 +1,10 @@
 import argparse
 import os
 import random
+import signal
 import sys
 import time
+import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from . import geo, news_filter
@@ -434,8 +436,26 @@ def crawl_engine(args, engine, mode):
     return {strip_amp(link) for link in all_links}
 
 
+def _berhenti_pada_sigterm(signum, frame):
+    """Ubah SIGTERM jadi KeyboardInterrupt.
+
+    Perilaku bawaan Python untuk SIGTERM adalah mati seketika: blok `finally`
+    tidak jalan, browser tidak ditutup rapi — sehingga cookie profil yang
+    menahan CAPTCHA tidak sempat ditulis ke disk — dan link yang sudah
+    terkumpul di engine yang sedang berjalan ikut hilang.
+
+    Yang mengirim SIGTERM ke sini bukan hal langka: `timeout` di
+    run-linktaker.sh, `pm2 stop`, `pm2 restart`, dan `systemctl stop`. Dijadikan
+    KeyboardInterrupt supaya semuanya lewat jalur berhenti yang sama dengan
+    Ctrl-C, yang sudah menyimpan hasil dan menutup browser.
+    """
+    raise KeyboardInterrupt
+
+
 def main(argv=None):
     """Main execution."""
+    signal.signal(signal.SIGTERM, _berhenti_pada_sigterm)
+
     args = parse_args(argv)
 
     if args.fresh_profile:
@@ -452,22 +472,63 @@ def main(argv=None):
         engines_to_run = [args.engine]
 
     all_links = set()
+    gagal = []
     for i, engine in enumerate(engines_to_run):
         if len(engines_to_run) > 1:
             print(f"\n=== Engine {i + 1}/{len(engines_to_run)}: {engine.name} ===")
         mode = args.mode or engine.default_mode
-        all_links |= crawl_engine(args, engine, mode)
+        try:
+            all_links |= crawl_engine(args, engine, mode)
+        except KeyboardInterrupt:
+            # Ctrl-C, atau SIGTERM dari `timeout`/`pm2 stop`/`systemctl stop`
+            # lewat _berhenti_pada_sigterm. Browser sudah ditutup oleh blok
+            # finally di crawl_engine saat exception ini lewat, jadi di sini
+            # tinggal menyimpan apa yang sempat terkumpul.
+            print(f"\nDihentikan di engine {engine.name} — menyimpan yang sudah terkumpul")
+            write_output(args.output, all_links)
+            print(f"Links saved to {args.output} (unique: {len(all_links)})")
+            # 130 = konvensi "dihentikan oleh sinyal". Bukan crawl yang gagal.
+            return 130
+        except Exception as e:
+            # Satu engine yang gagal tidak boleh menghapus hasil engine lain.
+            # Sebelum ini, exception di engine ketiga membuat seluruh run
+            # berakhir tanpa file output sama sekali — termasuk link dari dua
+            # engine yang sudah selesai dengan baik.
+            print(f"\nEngine {engine.name} gagal: {e}")
+            traceback.print_exc()
+            gagal.append(engine.name)
 
-    # Write results
-    out_dir = os.path.dirname(os.path.abspath(args.output))
-    if out_dir:
-        os.makedirs(out_dir, exist_ok=True)
-    with open(args.output, "w", encoding="utf-8") as f:
-        for link in sorted(all_links):
-            f.write(link + "\n")
+        # Ditulis ulang tiap engine selesai, bukan sekali di akhir. File hasil
+        # jadi selalu berisi apa pun yang sudah didapat sampai detik itu.
+        write_output(args.output, all_links)
 
     print(f"\nLinks saved to {args.output} (unique: {len(all_links)})")
+    if gagal:
+        print(f"Engine yang gagal dan tidak menyumbang link: {', '.join(gagal)}")
     report_rejections()
+
+    # Semua engine gagal berarti run ini memang gagal, dan exit code-nya harus
+    # bilang begitu supaya terlihat di log scheduler. Sebagian gagal tidak:
+    # file hasil tetap terisi dari engine yang berhasil, dan baris "Engine yang
+    # gagal" di atas sudah menjelaskan sisanya.
+    if gagal and len(gagal) == len(engines_to_run):
+        return 1
+    return 0
+
+
+def write_output(path, links):
+    """Tulis seluruh link ke file, menimpa isi sebelumnya.
+
+    Dipanggil tiap engine selesai. Mode "w" memang menimpa, dan itu yang
+    diinginkan: `links` selalu berisi akumulasi dari awal run, bukan potongan
+    engine terakhir saja.
+    """
+    out_dir = os.path.dirname(os.path.abspath(path))
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        for link in sorted(links):
+            f.write(link + "\n")
 
 
 def report_rejections(limit: int = 15):

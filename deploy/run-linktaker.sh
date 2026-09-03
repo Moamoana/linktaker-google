@@ -48,6 +48,15 @@ GEO="${GEO:-}"                 # mis. my / malaysia; kosong = default browser
 PROXY="${PROXY:-}"
 KEEP_DAYS="${KEEP_DAYS:-14}"   # umur maksimum file hasil & log
 
+# Batas waktu keras untuk satu crawl — jaring pengaman terakhir. Timeout di
+# dalam Playwright membatasi per halaman, tapi tidak semua panggilan bisa
+# dibatasi dari sana: context.new_page() tidak punya parameter timeout sama
+# sekali, dan itulah yang pernah menggantung dua jam penuh tanpa satu baris log
+# pun. systemd sudah punya pengaman setara (TimeoutStartSec di
+# deploy/systemd/linktaker.service); baris ini yang memberikannya ke PM2 dan
+# cron. Isi kosong (RUN_TIMEOUT=) untuk mematikannya.
+RUN_TIMEOUT="${RUN_TIMEOUT:-90m}"
+
 # Tidak ada yang menunggu di depan laptop jam 3 pagi, jadi run terjadwal
 # berjalan tanpa jendela dan melewati halaman yang kena CAPTCHA. Menunggu
 # CAPTCHA_WAIT_TIMEOUT per halaman hanya menghabiskan jatah jadwal.
@@ -119,7 +128,13 @@ if ! flock -n 9; then
     # perlu tahu kenapa tidak terjadi apa-apa.
     [ "$INTERACTIVE" = "1" ] && \
         echo "Run sebelumnya masih berjalan — dilewati. Cek: pgrep -af linktaker.py"
-    exit 0
+    # Exit 75 (EX_TEMPFAIL), bukan 0: "tidak jadi jalan" berbeda dari "jalan dan
+    # selesai", dan pemanggilnya perlu bisa membedakan. pm2-loop.sh memakai ini
+    # untuk tidak mencatat run yang dilewati sebagai crawl yang selesai — dulu
+    # dicatat, dan satu slot hilang diam-diam setiap kali lock-nya bentrok.
+    # deploy/systemd/linktaker.service menyebutnya di SuccessExitStatus supaya
+    # systemd tetap senyap untuk kejadian yang memang normal ini.
+    exit 75
 fi
 
 ARGS=(--input "$INPUT" --engine "$ENGINE" --mode "$MODE" --sort "$SORT"
@@ -147,6 +162,19 @@ if [ "$HEADED" = "1" ] || [ "$ON_CAPTCHA" = "headed" ]; then
     fi
 fi
 
+# Pembungkus batas waktu, dipasang di depan perintah. TERM dulu supaya Python
+# sempat menutup browser dan menulis apa yang sudah terkumpul, KILL 60 detik
+# kemudian untuk proses yang tidak menjawab TERM sekali pun.
+TIMEOUT=()
+if [ -n "$RUN_TIMEOUT" ]; then
+    if command -v timeout >/dev/null 2>&1; then
+        TIMEOUT=(timeout --signal=TERM --kill-after=60s "$RUN_TIMEOUT")
+    else
+        echo "$(date -Is) 'timeout' tidak ada — crawl berjalan tanpa batas waktu." \
+             "Pasang dengan: sudo apt install -y coreutils" >&2
+    fi
+fi
+
 say "=== $(date -Is) | engine=$ENGINE mode=$MODE $DATE_FROM..$DATE_UNTIL -> $OUT ==="
 say "Log: $LOG"
 
@@ -158,14 +186,21 @@ if [ "$INTERACTIVE" = "1" ]; then
     # pesan apa pun. PIPESTATUS juga harus dibaca persis setelah pipeline,
     # karena perintah apa pun sesudahnya menimpanya.
     set +e
-    "${RUNNER[@]}" "$PYTHON_BIN" linktaker.py "${ARGS[@]}" 2>&1 | tee -a "$LOG"
+    "${RUNNER[@]}" "${TIMEOUT[@]}" "$PYTHON_BIN" linktaker.py "${ARGS[@]}" 2>&1 | tee -a "$LOG"
     status=${PIPESTATUS[0]}
     set -e
 else
-    "${RUNNER[@]}" "$PYTHON_BIN" linktaker.py "${ARGS[@]}" >>"$LOG" 2>&1 || status=$?
+    "${RUNNER[@]}" "${TIMEOUT[@]}" "$PYTHON_BIN" linktaker.py "${ARGS[@]}" >>"$LOG" 2>&1 || status=$?
 fi
 
-if [ "$status" -ne 0 ]; then
+# 124 datang dari `timeout`, bukan dari linktaker. Dibedakan karena obatnya
+# beda: exit lain berarti crawl-nya error, 124 berarti crawl-nya menggantung.
+if [ "$status" -eq 124 ]; then
+    say "$(date -Is) DIHENTIKAN — lewat batas waktu $RUN_TIMEOUT, lihat $LOG"
+    if [ -s "$OUT" ]; then
+        say "  $(wc -l <"$OUT") link yang sempat terkumpul tetap tersimpan di $OUT"
+    fi
+elif [ "$status" -ne 0 ]; then
     say "$(date -Is) GAGAL (exit $status), lihat $LOG"
 elif [ -s "$OUT" ]; then
     say "$(date -Is) SELESAI — $(wc -l <"$OUT") link di $OUT"

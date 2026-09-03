@@ -41,6 +41,18 @@ RSS_DECODE_DELAY = 2  # seconds between decoding RSS redirect URLs to avoid rate
 # CAPTCHA wait timeout in seconds (how long to wait for user to solve CAPTCHA)
 CAPTCHA_WAIT_TIMEOUT = 120
 
+# Batas waktu satu operasi halaman: goto, click, content, query_selector.
+# Sebelumnya nilainya 0 — "tunggu selamanya" — dan itu bukan pilihan yang aman
+# untuk run terjadwal. Satu halaman yang menggantung (Chromium berhenti
+# menjawab, koneksi mati tanpa menutup) membuat seluruh crawl diam tanpa pesan
+# apa pun sampai ada yang membunuhnya dari luar; sementara PM2 tetap melihat
+# loop-nya "online" dan tidak ikut campur. Dengan batas ini halaman yang macet
+# gagal cepat dan crawl lanjut ke keyword berikutnya.
+#
+# Pemanggil yang menyebut timeout-nya sendiri tidak terpengaruh: penantian
+# CAPTCHA tetap CAPTCHA_WAIT_TIMEOUT, dan _wait_for_page_ready tetap 15 detik.
+PAGE_TIMEOUT = 60
+
 # Run the browser without a visible window. Chromium fixes this at launch and
 # Playwright cannot flip it on a live browser, so a run that needs a window for
 # one CAPTCHA gets it by relaunching — see ON_CAPTCHA and browser.py.

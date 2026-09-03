@@ -8,7 +8,7 @@ from itertools import count
 from urllib.parse import unquote, urlparse, urlunparse
 
 from .config import (
-    USER_AGENTS, CAPTCHA_WAIT_TIMEOUT,
+    USER_AGENTS, CAPTCHA_WAIT_TIMEOUT, PAGE_TIMEOUT,
     PERSIST_PROFILE, BROWSER_PROFILE_DIR, FINGERPRINT_FILE,
     PAGE_DELAY_MIN, PAGE_DELAY_MAX,
     CAPTCHA_COOLDOWN_MIN, CAPTCHA_COOLDOWN_MAX,
@@ -240,6 +240,10 @@ class BrowserManager:
             self._browser = self._playwright.chromium.launch(**launch_args)
             self._context = self._browser.new_context(**context_opts)
 
+        # Halaman mewarisi batas ini saat dibuat; disetel di context juga supaya
+        # operasi yang tidak lewat sebuah page tetap punya batas.
+        self._context.set_default_timeout(PAGE_TIMEOUT * 1000)
+
         self._live_headless = is_headless
         print(f"  Browser mode: {'headless' if is_headless else 'headed'}")
         return True
@@ -249,7 +253,14 @@ class BrowserManager:
         page = self._context.new_page()
         if STEALTH_AVAILABLE:
             stealth_sync(page)
-        page.set_default_timeout(0)
+        # Bukan 0. Timeout tak terbatas berarti satu halaman yang menggantung
+        # menahan seluruh crawl selamanya — tanpa pesan error, tanpa exit code,
+        # dan tanpa apa pun yang bisa dilihat selain log yang berhenti bertambah.
+        # Penantian CAPTCHA tidak ikut terpotong: _await_solve dan
+        # _wait_for_page_ready menyebut timeout-nya masing-masing, dan nilai
+        # eksplisit selalu menang atas default ini.
+        page.set_default_timeout(PAGE_TIMEOUT * 1000)
+        page.set_default_navigation_timeout(PAGE_TIMEOUT * 1000)
         return page
 
     def _relaunch(self, headless: bool) -> bool:
