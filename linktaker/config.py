@@ -3,6 +3,33 @@
 # Every input and output lives under data/, which is where the .gitignore rules
 # for generated files point too. Paths stay relative: the tool is run from the
 # project directory, and the deploy scripts `cd` there first.
+
+import os
+
+
+def _env(nama, cast, default):
+    """Nilai dari environment kalau diisi, kalau tidak default yang diberikan.
+
+    Setelan yang paling sering disetel per mesin — jeda, batas waktu — dibuat
+    bisa ditimpa dari environment supaya tidak ada yang perlu mengedit file
+    ini. File ini di-track git: mengubahnya di satu mesin membuat `git pull`
+    berikutnya di mesin itu ditolak dengan "local changes would be
+    overwritten". deploy/linktaker.env yang menampung setelan per mesin, dan
+    deploy/run-linktaker.sh yang meneruskannya ke sini.
+
+    String kosong dihitung "tidak diisi": script shell meneruskan variabel yang
+    belum diset sebagai string kosong, dan float("") hanya akan menggagalkan
+    run yang sebenarnya baik-baik saja.
+    """
+    raw = os.environ.get(nama, "")
+    if not str(raw).strip():
+        return default
+    try:
+        return cast(raw)
+    except ValueError:
+        print(f"  {nama}={raw!r} bukan angka yang sah — memakai {default}")
+        return default
+
 DATA_DIR = "data"
 URLS_FILE = "data/url.txt"
 KEYWORDS_FILE = "data/keywords.txt"       # default for --input
@@ -39,7 +66,7 @@ USE_GOOGLE_RSS = False
 RSS_DECODE_DELAY = 2  # seconds between decoding RSS redirect URLs to avoid rate limits
 
 # CAPTCHA wait timeout in seconds (how long to wait for user to solve CAPTCHA)
-CAPTCHA_WAIT_TIMEOUT = 120
+CAPTCHA_WAIT_TIMEOUT = _env("CAPTCHA_WAIT_TIMEOUT", int, 120)
 
 # Batas waktu satu operasi halaman: goto, click, content, query_selector.
 # Sebelumnya nilainya 0 — "tunggu selamanya" — dan itu bukan pilihan yang aman
@@ -51,7 +78,7 @@ CAPTCHA_WAIT_TIMEOUT = 120
 #
 # Pemanggil yang menyebut timeout-nya sendiri tidak terpengaruh: penantian
 # CAPTCHA tetap CAPTCHA_WAIT_TIMEOUT, dan _wait_for_page_ready tetap 15 detik.
-PAGE_TIMEOUT = 60
+PAGE_TIMEOUT = _env("PAGE_TIMEOUT", int, 60)
 
 # Run the browser without a visible window. Chromium fixes this at launch and
 # Playwright cannot flip it on a live browser, so a run that needs a window for
@@ -88,13 +115,19 @@ FINGERPRINT_FILE = ".fingerprint.json"
 # Jitter between result pages within one keyword. Previously "Next" was clicked
 # the instant the page finished loading — ten pages in fifteen seconds, which no
 # human produces.
-PAGE_DELAY_MIN = 4
-PAGE_DELAY_MAX = 8
+PAGE_DELAY_MIN = _env("PAGE_DELAY_MIN", float, 4)
+PAGE_DELAY_MAX = _env("PAGE_DELAY_MAX", float, 8)
+
+# Jeda antar-keyword — antara satu URL pencarian dan berikutnya, bukan antar
+# halaman di dalam satu keyword. Dengan keyword yang banyak, ini yang paling
+# menentukan seberapa cepat sebuah run terlihat seperti scraper.
+URL_DELAY_MIN = _env("URL_DELAY_MIN", float, 1)
+URL_DELAY_MAX = _env("URL_DELAY_MAX", float, 5)
 
 # Pause after a solved CAPTCHA before touching the next page. Resuming at full
 # speed right after a challenge tends to earn the next one immediately.
-CAPTCHA_COOLDOWN_MIN = 8.0
-CAPTCHA_COOLDOWN_MAX = 10.0
+CAPTCHA_COOLDOWN_MIN = _env("CAPTCHA_COOLDOWN_MIN", float, 8.0)
+CAPTCHA_COOLDOWN_MAX = _env("CAPTCHA_COOLDOWN_MAX", float, 10.0)
 
 # Social media domains to exclude
 SOCIAL_MEDIA_DOMAINS = {

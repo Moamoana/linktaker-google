@@ -12,7 +12,7 @@ from .browser import BrowserManager, reset_profile
 from .config import (
     KEYWORDS_FILE, URLS_FILE, PROXIES_FILE, OUT_FILE, NEWS_DOMAINS_FILE,
     MAX_PAGES_PER_SEARCH, DEFAULT_SORT, DEFAULT_ENGINE, NEWS_FILTER,
-    FETCH_MODE, USE_GOOGLE_RSS, RSS_DECODE_DELAY,
+    FETCH_MODE, USE_GOOGLE_RSS, RSS_DECODE_DELAY, URL_DELAY_MIN, URL_DELAY_MAX,
     USE_CLOUDFLARE_BYPASS, PARALLEL_WORKERS, SOCIAL_MEDIA_DOMAINS,
     PERSIST_PROFILE, BROWSER_PROFILE_DIR, DEFAULT_GEO,
     HEADLESS, ON_CAPTCHA, CAPTCHA_WAIT_TIMEOUT,
@@ -401,7 +401,7 @@ def crawl_engine(args, engine, mode):
                                               args.max_pages, engine) or set())
                 # Jitter between search URLs to avoid burst-rate detection
                 if i < len(shuffled) - 1:
-                    delay = random.uniform(1, 5)
+                    delay = random.uniform(URL_DELAY_MIN, URL_DELAY_MAX)
                     print(f"  Waiting {delay:.1f}s before next URL...")
                     time.sleep(delay)
         else:

@@ -288,6 +288,21 @@ Daftar variabelnya:
 | `HEADED`    | `0`     | `1` = pakai jendela sepanjang run (butuh desktop/xvfb) |
 | `ON_CAPTCHA`| `skip`  | `skip` untuk run terjadwal, `headed` kalau ditunggui   |
 | `KEEP_DAYS` | `14`    | umur maksimum file hasil dan log                   |
+| `RUN_TIMEOUT` | `90m` | batas waktu satu crawl; lewat itu prosesnya dibunuh |
+
+Jeda dan batas waktu — dinaikkan kalau sering kena CAPTCHA, semua dalam detik:
+
+| Variabel                | Default | Arti                                      |
+|-------------------------|---------|-------------------------------------------|
+| `PAGE_DELAY_MIN` / `MAX`| `4` / `8` | jeda antar-halaman di dalam satu keyword |
+| `URL_DELAY_MIN` / `MAX` | `1` / `5` | jeda antar-keyword                       |
+| `CAPTCHA_COOLDOWN_MIN` / `MAX` | `8` / `10` | jeda sesudah CAPTCHA diselesaikan |
+| `PAGE_TIMEOUT`          | `60`    | batas satu operasi halaman; **jangan diisi 0** |
+| `CAPTCHA_WAIT_TIMEOUT`  | `120`   | lama menunggu orang menyelesaikan CAPTCHA |
+
+Yang di tabel kedua dibaca `linktaker/config.py` langsung dari environment, jadi
+tidak perlu ada yang mengedit file itu — dan memang sebaiknya tidak: `config.py`
+di-track git, sehingga mengubahnya membuat `git pull` berikutnya ditolak.
 
 ```bash
 ENGINE=google GEO=malaysia MAX_PAGES=3 ./deploy/run-linktaker.sh

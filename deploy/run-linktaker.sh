@@ -57,6 +57,16 @@ KEEP_DAYS="${KEEP_DAYS:-14}"   # umur maksimum file hasil & log
 # cron. Isi kosong (RUN_TIMEOUT=) untuk mematikannya.
 RUN_TIMEOUT="${RUN_TIMEOUT:-90m}"
 
+# Setelan penyetelan halus yang dibaca linktaker/config.py langsung dari
+# environment — jeda antar-halaman, jeda antar-keyword, batas waktu. Sengaja
+# tidak diberi default di sini: yang tidak diisi memakai default di config.py,
+# jadi angkanya tidak perlu ditulis di dua tempat dan tidak bisa berbeda.
+for _v in PAGE_DELAY_MIN PAGE_DELAY_MAX URL_DELAY_MIN URL_DELAY_MAX \
+          CAPTCHA_COOLDOWN_MIN CAPTCHA_COOLDOWN_MAX \
+          CAPTCHA_WAIT_TIMEOUT PAGE_TIMEOUT; do
+    eval "[ -n \"\${$_v:-}\" ]" && export "$_v"
+done
+
 # Tidak ada yang menunggu di depan laptop jam 3 pagi, jadi run terjadwal
 # berjalan tanpa jendela dan melewati halaman yang kena CAPTCHA. Menunggu
 # CAPTCHA_WAIT_TIMEOUT per halaman hanya menghabiskan jatah jadwal.
