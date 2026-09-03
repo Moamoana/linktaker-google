@@ -29,6 +29,15 @@ fi
 # shell interaktif, dan cron maupun systemd tidak menyediakannya.
 # Untuk conda, arahkan saja ke python di dalam env-nya; script tidak peduli.
 PYTHON_BIN="${PYTHON_BIN:-$APP_DIR/.venv/bin/python}"
+
+# Python mem-buffer stdout per 8 KB begitu tujuannya bukan terminal — dan di
+# sini tujuannya selalu pipe ke tee atau file log. Tanpa ini sebuah run yang
+# sehat tidak mencetak satu baris pun sampai buffer penuh atau prosesnya
+# selesai: di layar terlihat menggantung tepat sesudah baris "Log:", dan
+# data/logs/run-*.log tetap kosong berjam-jam — tidak bisa dibedakan dari
+# crawl yang benar-benar macet.
+export PYTHONUNBUFFERED=1
+
 OUT_DIR="${OUT_DIR:-$APP_DIR/data/hasil}"
 LOG_DIR="${LOG_DIR:-$APP_DIR/data/logs}"
 INPUT="${INPUT:-data/keywords.txt}"   # daftar keyword yang dipakai
