@@ -12,6 +12,7 @@
 - [Struktur Kode (Package Modules)](#struktur-kode-package-modules)
 - [Prasyarat](#prasyarat)
 - [Instalasi](#instalasi)
+- [Menjalankan, Menguji & Melihat Log](#menjalankan-menguji--melihat-log)
 - [Konfigurasi](#konfigurasi)
 - [Penggunaan](#penggunaan)
 - [Search Engine: Google, Bing & Yahoo](#search-engine-google-bing--yahoo)
@@ -26,6 +27,8 @@
 - [Filter Berita (News Filter)](#filter-berita-news-filter)
 - [Filter Social Media](#filter-social-media)
 - [Troubleshooting](#troubleshooting)
+- [Struktur Project](#struktur-project)
+- [Dependencies](#dependencies)
 - [Lisensi](#lisensi)
 
 ---
@@ -182,6 +185,140 @@ Jika lebih suka install satu per satu:
 pip install curl_cffi beautifulsoup4 cloudscraper playwright playwright-stealth browserforge feedparser
 playwright install chromium
 ```
+
+---
+
+## Menjalankan, Menguji & Melihat Log
+
+Tiga hal yang paling sering dilakukan sehari-hari. Semua perintah dijalankan
+dari folder project, dan memakai `.venv/bin/python` (bukan `python` biasa) kalau
+mesinnya memakai virtualenv — dengan begitu tidak perlu `source activate`, yang
+memang tidak tersedia di cron, systemd, maupun PM2.
+
+### Menjalankan
+
+Ada dua cara, dan bedanya bukan sekadar panjang perintah:
+
+| | `python linktaker.py …` | `./deploy/run-linktaker.sh` |
+|---|---|---|
+| Untuk | mencoba parameter, debugging | run sungguhan & terjadwal |
+| Output | ke file yang Anda tentukan | `data/hasil/links-<engine>-<tanggal-jam>.txt` |
+| Log | hanya ke layar | `data/logs/run-<tanggal-jam>.log` |
+| Kirim ke `submit_batch` | tidak | ya, otomatis setelah crawl |
+| Kunci anti-tumpang-tindih | tidak | ya (`flock`) |
+
+**Sekali jalan, untuk mencoba:**
+
+```bash
+.venv/bin/python linktaker.py --input data/keywords.txt \
+    --from 1d --until today --sort latest \
+    --output data/hasil/coba.txt --max-pages 2
+```
+
+**Run sungguhan** — crawl, tulis hasil bertimestamp, lalu kirim:
+
+```bash
+./deploy/run-linktaker.sh
+```
+
+Setelan sekali-pakai ditulis di depan perintah; daftar lengkapnya di
+[`deploy/linktaker.env.example`](deploy/linktaker.env.example):
+
+```bash
+ENGINE=google MAX_PAGES=2 ./deploy/run-linktaker.sh    # satu engine, 2 halaman
+DATE_FROM=w ./deploy/run-linktaker.sh                  # jendela seminggu terakhir
+SUBMIT_ENABLED=0 ./deploy/run-linktaker.sh             # crawl saja, jangan kirim
+HEADED=1 ON_CAPTCHA=headed ./deploy/run-linktaker.sh   # buka jendela, selesaikan CAPTCHA sendiri
+```
+
+**Terjadwal tiap 3 jam** (PM2, systemd timer, atau cron) — pemasangannya di
+[`docs/INSTALL-LINUX.md`](docs/INSTALL-LINUX.md):
+
+```bash
+pm2 start deploy/ecosystem.config.js && pm2 save
+```
+
+**Mengirim hasil secara manual**, tanpa crawl — misalnya setelah endpoint yang
+sempat mati kembali hidup:
+
+```bash
+.venv/bin/python -m linktaker.submit data/hasil/links-all-*.txt --dry-run   # lihat dulu
+.venv/bin/python -m linktaker.submit data/hasil/links-all-*.txt             # kirim
+```
+
+Link yang sudah pernah terkirim tetap dilewati, jadi perintah ini aman diulang.
+
+### Menguji
+
+```bash
+.venv/bin/pip install -e ".[dev]"      # sekali — memasang pytest
+.venv/bin/python -m pytest             # seluruh suite, beberapa detik
+```
+
+```bash
+.venv/bin/python -m pytest tests/test_submit_client.py -v   # satu file, verbose
+.venv/bin/python -m pytest -k "batch or antrean"            # yang namanya cocok saja
+```
+
+Isinya logika murni: penyaringan duplikat dan antrean pengiriman, pemecahan
+batch, normalisasi URL, gerbang filter berita, parsing tanggal relatif, dan
+resolusi `--geo`. Tidak ada satu pun yang membuka browser atau menyentuh
+jaringan, jadi suite ini aman dijalankan di mana saja dan pantas dijalankan
+sebelum setiap commit.
+
+Yang justru berurusan dengan jaringan diuji lewat penyuntikan: `Submitter`
+menerima fungsi `post` apa saja, sehingga perilaku saat server menolak batch
+atau mati di tengah jalan bisa diuji tanpa server sungguhan — lihat
+[`tests/test_submit_client.py`](tests/test_submit_client.py).
+
+Dua hal yang tidak dijangkau pytest, dan cara memeriksanya:
+
+```bash
+# Crawl beneran jalan? Sekali run kecil, tanpa mengirim apa pun.
+SUBMIT_ENABLED=0 MAX_PAGES=1 ./deploy/run-linktaker.sh
+
+# Pengiriman menyambung ke endpoint? --dry-run memperlihatkan tujuan dan
+# jumlahnya tanpa mengirim; hapus flag-nya kalau sudah yakin.
+.venv/bin/python -m linktaker.submit data/hasil/links-all-*.txt --dry-run
+```
+
+### Melihat log
+
+| Yang dicari | Tempatnya |
+|---|---|
+| Jalannya satu crawl | `data/logs/run-<tanggal-jam>.log` |
+| Run yang dilewati karena run sebelumnya belum selesai | `data/logs/skipped.log` |
+| Penjadwal PM2 | `pm2 logs linktaker`, atau `data/logs/pm2-out.log` |
+| Penjadwal systemd | `journalctl --user -u linktaker.service -n 50` |
+| Link hasil per run | `data/hasil/links-<engine>-<tanggal-jam>.txt` |
+| Sudah dikirim / masih mengantre | `data/state/sent-urls.txt`, `data/state/pending-urls.txt` |
+
+```bash
+tail -f "$(ls -t data/logs/run-*.log | head -1)"   # run yang sedang berjalan
+ls -lt data/logs | head                            # run terakhir kapan
+grep -h "SELESAI\|GAGAL\|terkirim" data/logs/run-*.log | tail -20
+wc -l data/state/sent-urls.txt data/state/pending-urls.txt
+```
+
+Isi satu log run, dan cara membacanya:
+
+```
+=== 2026-08-31T09:50:02+07:00 | engine=all mode=both 1d..today -> data/hasil/links-all-20260831-0950.txt ===
+2026-08-31T10:02:41+07:00 SELESAI — 303 link di data/hasil/links-all-20260831-0950.txt
+2026-08-31T10:02:41+07:00 kirim: 303 link (303 dari hasil, 0 dari antrean, 0 dilewati …)
+2026-08-31T10:02:42+07:00 batch 1/4 (100 link) -> http://…/submit_batch/
+2026-08-31T10:02:44+07:00 terkirim 303 link
+```
+
+| Baris | Artinya |
+|---|---|
+| `SELESAI — N link` | crawl beres, hasilnya N link |
+| `SELESAI tapi 0 link` | crawl jalan tapi kosong — hampir selalu CAPTCHA |
+| `GAGAL (exit N)` | crawl berhenti dengan error; penyebabnya di baris-baris di atasnya |
+| `kirim: N link (… dilewati …)` | angka "dilewati" yang besar itu normal: berita yang sama muncul lagi di run berikutnya |
+| `terkirim N link` | N link masuk ke endpoint |
+| `… masuk antrean untuk run berikutnya` | endpoint sedang tidak bisa dihubungi; tidak ada yang hilang |
+| `dibuang karena ditolak server` | perlu dilihat: endpoint atau format kirimannya bermasalah |
 
 ---
 
@@ -1000,26 +1137,6 @@ linktaker-google/
 ├── requirements.txt      # Daftar dependencies Python
 └── README.md             # Dokumentasi ini
 ```
-
----
-
-## Test
-
-```bash
-.venv/bin/pip install -e ".[dev]"      # sekali — memasang pytest
-.venv/bin/python -m pytest
-```
-
-Isinya hanya logika murni: penyaringan duplikat dan antrean pengiriman,
-pemecahan batch, normalisasi URL, gerbang filter berita, parsing tanggal
-relatif, dan resolusi `--geo`. Tidak ada yang membuka browser atau menyentuh
-jaringan, jadi seluruh suite selesai dalam hitungan detik dan aman dijalankan
-di mana saja.
-
-Bagian yang memang berurusan dengan jaringan diuji lewat penyuntikan: `Submitter`
-menerima fungsi `post` apa saja, jadi perilaku saat server menolak batch atau
-mati di tengah jalan bisa diuji tanpa server sungguhan — lihat
-`tests/test_submit_client.py`.
 
 ---
 
