@@ -51,5 +51,24 @@ module.exports = {
       merge_logs: true,
       time: true,
     },
+
+    // Relay proxy lokal, opsional — hanya perlu kalau proxy yang dipakai tidak
+    // mengirim tantangan auth yang sah ke Chromium (lihat deploy/proxy-relay.py
+    // dan UPSTREAM_PROXY di deploy/linktaker.env.example). Diam dengan cepat
+    // dan tidak retry-loop rapat kalau UPSTREAM_PROXY belum diisi.
+    {
+      name: "proxy-relay",
+      script: path.join(__dirname, "proxy-relay.sh"),
+      interpreter: "bash",
+      cwd: ROOT,
+      autorestart: true,
+      restart_delay: 10000,
+      instances: 1,
+      env: { APP_DIR: ROOT },
+      out_file: path.join(ROOT, "data/logs/proxy-relay-out.log"),
+      error_file: path.join(ROOT, "data/logs/proxy-relay-err.log"),
+      merge_logs: true,
+      time: true,
+    },
   ],
 };

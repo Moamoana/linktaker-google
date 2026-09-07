@@ -855,6 +855,24 @@ http://user:pass@proxy1.com:8080
 socks5://proxy2.com:1080
 ```
 
+### Proxy yang menolak Chromium tapi lolos di curl
+
+Sebagian proxy membalas tantangan tanpa kredensial dengan `407` tapi **tanpa** header `Proxy-Authenticate` yang sah. `curl` tetap lolos kalau kredensialnya ditempel di depan (dia tidak menunggu tantangan resmi), tapi Chromium mewajibkan header itu ada sebelum mau kirim kredensial apa pun — jadi selalu gagal dengan `ERR_PROXY_AUTH_UNSUPPORTED` walau kredensialnya benar. Cirinya: `curl -x http://user:pass@host:port ...` berhasil, tapi crawl tetap `about:blank`/`ERR_PROXY_AUTH_UNSUPPORTED` di log.
+
+`deploy/proxy-relay.py` menjembatani ini — jalan di localhost, menerima koneksi dari Chromium tanpa auth sama sekali, lalu meneruskannya ke proxy asli dengan kredensial yang sudah ditempel duluan, persis seperti `curl`:
+
+```bash
+cp deploy/linktaker.env.example deploy/linktaker.env   # kalau belum ada
+nano deploy/linktaker.env
+# isi: UPSTREAM_PROXY=http://user:pass@proxycrawler.dashboard.nolimit.id:2570
+#      PROXY=http://127.0.0.1:8899   (tanpa kredensial — ini yang dilihat Chromium)
+
+pm2 start deploy/ecosystem.config.js --only proxy-relay
+pm2 save
+```
+
+`ecosystem.config.js` sudah menyertakan proses `proxy-relay` ini; hidupkan bersama `linktaker` sekali jalan dengan `pm2 start deploy/ecosystem.config.js`.
+
 ### Autentikasi
 
 1. Buat file `auth.json`:
