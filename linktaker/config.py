@@ -30,6 +30,19 @@ def _env(nama, cast, default):
         print(f"  {nama}={raw!r} bukan angka yang sah — memakai {default}")
         return default
 
+
+def _flag(nama, default):
+    """Versi `_env` untuk setelan hidup/mati.
+
+    Script shell menuliskannya sebagai 1/0, orang menuliskannya sebagai
+    true/yes/on — keduanya diterima, dan apa pun selain itu dihitung mati.
+    """
+    raw = os.environ.get(nama, "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on", "ya")
+
+
 DATA_DIR = "data"
 URLS_FILE = "data/url.txt"
 KEYWORDS_FILE = "data/keywords.txt"       # default for --input
@@ -45,6 +58,15 @@ DEFAULT_ENGINE = "google"            # default for --engine ("google" or "bing")
 # non-article URLs but still lets an unknown portal through; "strict" admits
 # only NEWS_DOMAINS_FILE; "off" is the old behaviour. See news_filter.py.
 NEWS_FILTER = "smart"                # default for --news-filter
+# Tambahkan penerbit yang baru ketemu ke NEWS_DOMAINS_FILE begitu run selesai —
+# default untuk --learn-domains. Sengaja mati secara default: file itu ikut
+# di-track git, dan run terjadwal yang menulisinya tiap malam membuat `git pull`
+# berikutnya di mesin itu ditolak. Nyalakan per mesin lewat environment
+# (LEARN_DOMAINS=1 di deploy/linktaker.env) atau per run lewat flag-nya.
+LEARN_DOMAINS = _flag("LEARN_DOMAINS", False)
+# Berapa kali sebuah domain harus muncul dalam satu run sebelum layak ditulis —
+# default untuk --learn-min. 1 berarti semua yang lolos gate ikut.
+LEARN_MIN_HITS = _env("LEARN_MIN_HITS", int, 1)
 # Which country's results to ask for — the default for --geo. An ISO country
 # code ("my") or a country name ("malaysia"); None searches from wherever the
 # browser appears to be, which is the old behaviour. See geo.py.
@@ -115,14 +137,14 @@ FINGERPRINT_FILE = ".fingerprint.json"
 # Jitter between result pages within one keyword. Previously "Next" was clicked
 # the instant the page finished loading — ten pages in fifteen seconds, which no
 # human produces.
-PAGE_DELAY_MIN = _env("PAGE_DELAY_MIN", float, 4)
-PAGE_DELAY_MAX = _env("PAGE_DELAY_MAX", float, 8)
+PAGE_DELAY_MIN = _env("PAGE_DELAY_MIN", float, 1)
+PAGE_DELAY_MAX = _env("PAGE_DELAY_MAX", float, 2)
 
 # Jeda antar-keyword — antara satu URL pencarian dan berikutnya, bukan antar
 # halaman di dalam satu keyword. Dengan keyword yang banyak, ini yang paling
 # menentukan seberapa cepat sebuah run terlihat seperti scraper.
 URL_DELAY_MIN = _env("URL_DELAY_MIN", float, 1)
-URL_DELAY_MAX = _env("URL_DELAY_MAX", float, 5)
+URL_DELAY_MAX = _env("URL_DELAY_MAX", float, 2)
 
 # Pause after a solved CAPTCHA before touching the next page. Resuming at full
 # speed right after a challenge tends to earn the next one immediately.

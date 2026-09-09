@@ -136,6 +136,26 @@ def read_proxies(path):
     return proxies
 
 
+def normalise_domain(entry: str) -> str:
+    """Satu baris allowlist -> domain telanjang, atau string kosong kalau bukan.
+
+        www.detik.com          -> detik.com
+        https://tempo.co/rubrik -> tempo.co
+        *.tribunnews.com       -> tribunnews.com
+    """
+    entry = (entry or "").strip().lower()
+    if not entry or entry.startswith("#"):
+        return ""
+
+    entry = entry.split("//")[-1]          # buang skema yang ikut ter-paste
+    entry = entry.split("/")[0]            # buang path yang ikut ter-paste
+    entry = entry.split(":")[0]            # buang port
+    entry = entry.lstrip("*.").rstrip(".")
+    if entry.startswith("www."):
+        entry = entry[4:]
+    return entry
+
+
 def read_news_domains(path=NEWS_DOMAINS_FILE):
     """Read the publisher allowlist — one registrable domain per line.
 
@@ -155,18 +175,51 @@ def read_news_domains(path=NEWS_DOMAINS_FILE):
     domains = set()
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
-            entry = line.strip().lower()
-            if not entry or entry.startswith("#"):
-                continue
-
-            entry = entry.split("//")[-1]          # drop a pasted scheme
-            entry = entry.split("/")[0]            # drop a pasted path
-            entry = entry.lstrip("*.")
-            if entry.startswith("www."):
-                entry = entry[4:]
+            entry = normalise_domain(line)
             if entry:
                 domains.add(entry)
     return domains
+
+
+def append_news_domains(domains, path=NEWS_DOMAINS_FILE, today: date = None):
+    """Tambahkan domain yang belum terdaftar ke akhir allowlist.
+
+    Dipakai `--learn-domains`: penerbit yang lolos gate `smart` tapi belum ada
+    di file ditulis di sini supaya run berikutnya — termasuk `--news-filter
+    strict` — sudah mengenalnya.
+
+    Yang ditulis masuk di bawah satu baris komentar bertanggal, bukan disisipkan
+    ke daftar yang sudah ada. Isinya jadi bisa ditinjau, dan satu run yang
+    memungut portal keliru bisa dibatalkan dengan menghapus blok itu saja.
+
+    Mengembalikan daftar domain yang benar-benar ditulis; yang sudah ada di file
+    dilewati, jadi memanggilnya dua kali tidak menghasilkan baris ganda.
+    """
+    path = resolve_data_path(path)
+    sudah_ada = read_news_domains(path) if os.path.exists(path) else set()
+
+    baru = sorted({d for d in (normalise_domain(x) for x in domains)
+                   if d and d not in sudah_ada})
+    if not baru:
+        return []
+
+    # File yang tidak berakhir newline akan menempel ke baris pertama tulisan
+    # ini kalau tidak diberi pemisah lebih dulu.
+    perlu_pemisah = False
+    if os.path.exists(path) and os.path.getsize(path):
+        with open(path, "rb") as f:
+            f.seek(-1, os.SEEK_END)
+            perlu_pemisah = f.read(1) != b"\n"
+
+    tanggal = (today or date.today()).isoformat()
+    with open(path, "a", encoding="utf-8", newline="\n") as f:
+        if perlu_pemisah:
+            f.write("\n")
+        f.write(f"\n# ditemukan otomatis saat crawl {tanggal}\n")
+        for domain in baru:
+            f.write(domain + "\n")
+
+    return baru
 
 
 def read_auth():

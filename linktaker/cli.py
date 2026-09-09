@@ -12,6 +12,7 @@ from .browser import BrowserManager, reset_profile
 from .config import (
     KEYWORDS_FILE, URLS_FILE, PROXIES_FILE, OUT_FILE, NEWS_DOMAINS_FILE,
     MAX_PAGES_PER_SEARCH, DEFAULT_SORT, DEFAULT_ENGINE, NEWS_FILTER,
+    LEARN_DOMAINS, LEARN_MIN_HITS,
     FETCH_MODE, USE_GOOGLE_RSS, RSS_DECODE_DELAY, URL_DELAY_MIN, URL_DELAY_MAX,
     USE_CLOUDFLARE_BYPASS, PARALLEL_WORKERS, SOCIAL_MEDIA_DOMAINS,
     PERSIST_PROFILE, BROWSER_PROFILE_DIR, DEFAULT_GEO,
@@ -20,8 +21,8 @@ from .config import (
 from .deps import CLOUDSCRAPER_AVAILABLE, STEALTH_AVAILABLE, BROWSERFORGE_AVAILABLE, PLAYWRIGHT_AVAILABLE
 from .engines import ENGINES, MODE_LABELS, SEARCH_MODES, expand_mode, get_engine
 from .fetchers import process_one_url
-from .inputs import (RELATIVE_HELP, parse_date, read_auth, read_keywords,
-                     read_news_domains, read_proxies, read_urls)
+from .inputs import (RELATIVE_HELP, append_news_domains, parse_date, read_auth,
+                     read_keywords, read_news_domains, read_proxies, read_urls)
 from .url_utils import strip_amp
 
 EXAMPLE = """example:
@@ -35,6 +36,10 @@ EXAMPLE = """example:
 
   # news only, allowlisted publishers exclusively (bing and yahoo need this most)
   python linktaker.py --engine bing --input keyword1.txt --news-filter strict
+
+  # kumpulkan penerbit baru ke data/news_domains.txt sambil crawl
+  python linktaker.py --input keyword1.txt --learn-domains
+  python linktaker.py --input keyword1.txt --learn-domains --learn-min 3
 
   # search as if from another country — a code or the country's name
   python linktaker.py --input keyword1.txt --geo my
@@ -165,6 +170,26 @@ def build_parser():
         help=f"publisher allowlist, one domain per line "
              f"(default: {NEWS_DOMAINS_FILE})",
     )
+    parser.add_argument(
+        "--learn-domains", "--learn_domains", dest="learn_domains",
+        action="store_true", default=LEARN_DOMAINS,
+        help="tulis penerbit baru yang lolos filter ke file allowlist saat run "
+             "selesai, di bawah komentar bertanggal. Hanya bekerja dengan "
+             "--news-filter smart"
+             + (" (default: nyala lewat LEARN_DOMAINS)" if LEARN_DOMAINS else ""),
+    )
+    parser.add_argument(
+        "--no-learn-domains", "--no_learn_domains", dest="learn_domains",
+        action="store_false",
+        help="jangan tulis apa pun ke file allowlist"
+             + ("" if LEARN_DOMAINS else " (default)"),
+    )
+    parser.add_argument(
+        "--learn-min", "--learn_min", dest="learn_min",
+        type=positive_int, default=LEARN_MIN_HITS, metavar="N",
+        help=f"berapa kali sebuah domain harus muncul dalam satu run sebelum "
+             f"ikut ditulis oleh --learn-domains (default: {LEARN_MIN_HITS})",
+    )
     return parser
 
 
@@ -221,6 +246,14 @@ def parse_args(argv=None):
         parser.error(f"--news-filter strict needs a populated {args.news_domains}, "
                      f"otherwise every link is rejected. Add domains to it, point "
                      f"--news-domains at another file, or use --news-filter smart.")
+
+    # Yang dipungut --learn-domains adalah host yang lolos gate `smart` tapi
+    # belum terdaftar. `strict` tidak pernah meloloskan host baru, dan `off`
+    # tidak menilai apa pun — di keduanya tidak ada yang bisa dipelajari.
+    if args.learn_domains and args.news_filter != "smart":
+        parser.error(f"--learn-domains hanya bekerja dengan --news-filter smart "
+                     f"(sekarang: {args.news_filter}). Mode strict tidak pernah "
+                     f"meloloskan host baru, mode off tidak menyaring sama sekali.")
 
     return args
 
@@ -302,6 +335,12 @@ def describe_run(args, engine, mode, url_count):
     else:
         print(f"News filter: {args.news_filter} "
               f"({len(args.allowlist)} publisher(s) from {args.news_domains})")
+
+    if args.learn_domains:
+        ambang = ("" if args.learn_min <= 1
+                  else f", minimal {args.learn_min} link per domain")
+        print(f"Learn domains: ON — penerbit baru ditulis ke {args.news_domains} "
+              f"saat run selesai{ambang}")
 
     if PERSIST_PROFILE:
         print(f"Browser profile: PERSISTENT ({BROWSER_PROFILE_DIR}/) — "
@@ -506,6 +545,10 @@ def main(argv=None):
     if gagal:
         print(f"Engine yang gagal dan tidak menyumbang link: {', '.join(gagal)}")
     report_rejections()
+    if args.learn_domains:
+        save_learned_domains(args.news_domains, args.learn_min)
+    else:
+        report_learned(args.output)
 
     # Semua engine gagal berarti run ini memang gagal, dan exit code-nya harus
     # bilang begitu supaya terlihat di log scheduler. Sebagian gagal tidak:
@@ -529,6 +572,69 @@ def write_output(path, links):
     with open(path, "w", encoding="utf-8") as f:
         for link in sorted(links):
             f.write(link + "\n")
+
+
+def report_learned(output_path, limit: int = 15):
+    """Sebutkan penerbit baru yang ketemu run ini, tanpa menulis apa pun.
+
+    Ini kebalikan dari laporan penolakan: host di sini justru lolos filter,
+    hanya belum terdaftar di allowlist. Selama `--news-filter smart` mereka
+    tetap ikut ke file hasil — daftar ini gunanya untuk memutuskan mana yang
+    layak dijadikan penerbit tetap, yang penting begitu run memakai `strict`.
+    """
+    baru = news_filter.learned
+    if not baru.total:
+        return
+
+    top = baru.top(limit)
+    print(f"Penerbit di luar allowlist yang lolos filter: "
+          f"{len(baru.by_domain)} host, {baru.total} link")
+    for domain, count in top:
+        print(f"  {count:>5}  {domain}")
+
+    sisa = len(baru.by_domain) - len(top)
+    if sisa > 0:
+        print(f"  ... dan {sisa} host lagi")
+    print(f"Tulis ke allowlist tanpa crawl ulang: "
+          f"python -m linktaker.learn {output_path} --min 5 --write")
+
+
+def save_learned_domains(path, min_hits: int = 1, limit: int = 15):
+    """Tulis penerbit baru run ini ke file allowlist. Dipakai `--learn-domains`.
+
+    Yang ditulis hanya domain yang menyumbang minimal `min_hits` link, dan
+    hanya yang belum ada di file — lihat `inputs.append_news_domains`.
+    """
+    baru = news_filter.learned
+    kandidat = baru.domains(min_hits)
+    if not kandidat:
+        if baru.total:
+            print(f"--learn-domains: {len(baru.by_domain)} host di luar allowlist, "
+                  f"tidak ada yang mencapai {min_hits} link — tidak ada yang ditulis")
+        else:
+            print("--learn-domains: tidak ada penerbit baru run ini")
+        return []
+
+    try:
+        ditulis = append_news_domains(kandidat, path)
+    except OSError as e:
+        # Allowlist yang gagal ditulis tidak boleh menggagalkan run yang link
+        # hasilnya sudah tersimpan.
+        print(f"--learn-domains: gagal menulis {path}: {e}")
+        return []
+
+    if not ditulis:
+        print(f"--learn-domains: {len(kandidat)} host baru, semuanya sudah ada "
+              f"di {path}")
+        return []
+
+    print(f"--learn-domains: {len(ditulis)} penerbit ditambahkan ke {path}")
+    for domain in ditulis[:limit]:
+        print(f"  + {domain} ({baru.by_domain[domain]} link)")
+    if len(ditulis) > limit:
+        print(f"  ... dan {len(ditulis) - limit} lagi")
+    print("Tinjau blok bertanggal di akhir file itu sebelum di-commit.")
+    return ditulis
 
 
 def report_rejections(limit: int = 15):

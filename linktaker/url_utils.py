@@ -77,11 +77,35 @@ def is_social_media(url: str) -> bool:
         return False
 
 
+# Portal statis dan blog engine lama menerbitkan artikelnya sebagai file
+# `.html`. Halaman seperti itu diminta tidak ikut ke file output sama sekali,
+# jadi gate-nya berdiri sendiri di sini — bukan bagian dari penilaian "berita
+# atau bukan" milik news_filter.
+HTML_SUFFIX = ".html"
+
+
+def ends_with_html(url: str) -> bool:
+    """True kalau alamatnya menunjuk sebuah file `.html`.
+
+    Yang dilihat hanya bagian path, sehingga query atau #fragment yang
+    membuntut di belakang ekstensi — `/berita.html?page=2` — tetap terhitung.
+    """
+    if not url:
+        return False
+    try:
+        path = urlparse(url).path
+    except ValueError:
+        path = url.split("#")[0].split("?")[0]
+    return path.lower().rstrip("/").endswith(HTML_SUFFIX)
+
+
 def is_valid_result_url(href: str, bad_netloc=()) -> bool:
     """Validate if URL is a real search result, not social media, and a news story.
 
     bad_netloc: host fragments belonging to the search engine itself, so its own
     internal links and ad redirects never reach the output file.
+
+    URL yang berakhiran `.html` ikut dibuang di sini — lihat `ends_with_html`.
 
     The news gate runs last so that the cheap structural checks reject first,
     and so its rejection report only counts links that were otherwise usable.
@@ -99,6 +123,9 @@ def is_valid_result_url(href: str, bad_netloc=()) -> bool:
             return False
 
     if is_social_media(href):
+        return False
+
+    if ends_with_html(href):
         return False
 
     p = urlparse(href)

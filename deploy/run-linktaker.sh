@@ -72,7 +72,8 @@ RUN_TIMEOUT="${RUN_TIMEOUT:-90m}"
 # jadi angkanya tidak perlu ditulis di dua tempat dan tidak bisa berbeda.
 for _v in PAGE_DELAY_MIN PAGE_DELAY_MAX URL_DELAY_MIN URL_DELAY_MAX \
           CAPTCHA_COOLDOWN_MIN CAPTCHA_COOLDOWN_MAX \
-          CAPTCHA_WAIT_TIMEOUT PAGE_TIMEOUT; do
+          CAPTCHA_WAIT_TIMEOUT PAGE_TIMEOUT \
+          LEARN_DOMAINS LEARN_MIN_HITS; do
     eval "[ -n \"\${$_v:-}\" ]" && export "$_v"
 done
 
@@ -159,6 +160,12 @@ fi
 ARGS=(--input "$INPUT" --engine "$ENGINE" --mode "$MODE" --sort "$SORT"
       --from "$DATE_FROM" --until "$DATE_UNTIL" --output "$OUT"
       --on-captcha "$ON_CAPTCHA")
+# Penumbuhan allowlist di run terjadwal ditangani satu langkah sendiri sesudah
+# crawl (lihat bagian LEARN_DOMAINS di bawah), yang menghitung lintas seluruh
+# file hasil. Yang di dalam crawl dimatikan supaya LEARN_MIN_HITS tidak berarti
+# dua hal berbeda — "sekian kali dalam satu run" di sini, "sekian kali dalam
+# KEEP_DAYS hari" di sana.
+ARGS+=(--no-learn-domains)
 if [ "$HEADED" = "1" ]; then ARGS+=(--headed); else ARGS+=(--headless); fi
 [ -n "$MAX_PAGES" ] && ARGS+=(--max-pages "$MAX_PAGES")
 [ -n "$GEO" ]       && ARGS+=(--geo "$GEO")
@@ -239,6 +246,31 @@ if [ "$SUBMIT_ENABLED" = "1" ]; then
         "$PYTHON_BIN" -m linktaker.submit "$OUT" 2>&1 | tee -a "$LOG" || true
     else
         "$PYTHON_BIN" -m linktaker.submit "$OUT" >>"$LOG" 2>&1 || true
+    fi
+fi
+
+# Tumbuhkan allowlist penerbit dari seluruh file hasil yang masih tersimpan,
+# bukan dari run ini saja. Bedanya besar: satu run menghasilkan beberapa ratus
+# link, jadi ambang "muncul minimal N kali" hampir tidak pernah tercapai di
+# dalam satu run. Dihitung lintas file — yang di sini berarti jendela
+# KEEP_DAYS hari terakhir, karena yang lebih tua sudah dihapus di bawah —
+# angkanya baru berarti.
+#
+# Kegagalan di sini tidak mengubah exit code: link hasil crawl sudah tersimpan
+# dan sudah dikirim, dan allowlist yang gagal tumbuh bukan run yang gagal.
+if [ "${LEARN_DOMAINS:-0}" = "1" ] || [ "${LEARN_DOMAINS:-}" = "true" ]; then
+    LEARN_ARGS=(-m linktaker.learn --min "${LEARN_MIN_HITS:-5}" --write)
+    # Tanpa nullglob, pola yang tidak cocok apa pun diteruskan apa adanya dan
+    # linktaker.learn hanya melaporkan "file tidak ditemukan".
+    shopt -s nullglob
+    LEARN_FILES=("$OUT_DIR"/*.txt)
+    shopt -u nullglob
+    if [ "${#LEARN_FILES[@]}" -gt 0 ]; then
+        if [ "$INTERACTIVE" = "1" ]; then
+            "$PYTHON_BIN" "${LEARN_ARGS[@]}" "${LEARN_FILES[@]}" 2>&1 | tee -a "$LOG" || true
+        else
+            "$PYTHON_BIN" "${LEARN_ARGS[@]}" "${LEARN_FILES[@]}" >>"$LOG" 2>&1 || true
+        fi
     fi
 fi
 

@@ -62,7 +62,7 @@
 | **Filter Berita** | `--news-filter` menjaga output hanya berisi artikel berita: `smart` (buang host non-berita + URL non-artikel), `strict` (hanya penerbit di `news_domains.txt`), `off` |
 | **Pencarian per Negara** | `--geo my` / `--geo malaysia` — cari seolah-olah dari negara tertentu. Google dapat `gl=`, Bing `cc=`, Yahoo situs regionalnya. Lihat [Pencarian per Negara](#pencarian-per-negara---geo) |
 | **Tanggal Relatif** | `--from w` / `--from 7d` / `--from 3m` — dihitung ulang tiap run, jadi jadwal berkala tidak terkunci di rentang tanggal yang sama. Lihat [Tanggal Relatif](#tanggal-relatif) |
-| **CLI Flags** | `--engine`, `--input`, `--from`, `--until`, `--sort`, `--geo`, `--output`, `--max-pages`, `--proxy`, `--mode`, `--news-filter`, `--news-domains`, `--headless`/`--headed`, `--on-captcha` |
+| **CLI Flags** | `--engine`, `--input`, `--from`, `--until`, `--sort`, `--geo`, `--output`, `--max-pages`, `--proxy`, `--mode`, `--news-filter`, `--news-domains`, `--learn-domains`, `--headless`/`--headed`, `--on-captcha` |
 | **Headless + Jendela Saat Perlu** | Crawl jalan tanpa jendela; jendela hanya dibuka saat kena CAPTCHA, lalu balik headless dan **lanjut dari halaman yang sama**. `--on-captcha skip` untuk run terjadwal. Lihat [Headless & CAPTCHA](#headless--captcha) |
 | **Multi-mode Fetch** | `curl` (cepat), `playwright` (akurat), `auto` (fallback otomatis) |
 | **Browser Fingerprinting** | Menggunakan `browserforge` untuk generate fingerprint browser yang realistis |
@@ -345,6 +345,8 @@ Nilai default ada di [`linktaker/config.py`](linktaker/config.py). Sebagian besa
 | `DEFAULT_SORT` | `"relevance"` | Default `--sort` (`relevance` atau `latest`) |
 | `DEFAULT_ENGINE` | `"google"` | Default `--engine` (`google`, `bing`, atau `yahoo`) |
 | `NEWS_FILTER` | `"smart"` | Default `--news-filter` (`smart`, `strict`, atau `off`) — lihat [Filter Berita](#filter-berita-news-filter) |
+| `LEARN_DOMAINS` | `False` | Default `--learn-domains`. Bisa diisi dari environment (`LEARN_DOMAINS=1`) — lihat [Menumbuhkan Allowlist](#menumbuhkan-allowlist---learn-domains) |
+| `LEARN_MIN_HITS` | `1` | Default `--learn-min` |
 | `DEFAULT_GEO` | `None` | Default `--geo`. Isi kode negara (`"my"`) atau namanya (`"malaysia"`) kalau semua run memang menyasar satu negara. `None` = ikut lokasi browser — lihat [Pencarian per Negara](#pencarian-per-negara---geo) |
 | `WAIT_SEC` | `20` | Timeout request dalam detik |
 | `PARALLEL_WORKERS` | `5` | Jumlah thread paralel (mode `curl`/`auto`) |
@@ -433,6 +435,8 @@ python -m linktaker --input keyword1.txt
 | `--mode {web,nws,both}` | tidak | `web` | `web` = tab **Semua/All**, `nws` = tab **Berita**, `both` = crawl kedua tab lalu digabung. Lihat [Tab pencarian](#tab-pencarian-semua-vs-berita) |
 | `--news-filter {smart,strict,off}` | tidak | `smart` | Seberapa ketat output disaring jadi link berita saja. Lihat [Filter Berita](#filter-berita-news-filter) |
 | `--news-domains FILE` | tidak | `data/news_domains.txt` | File allowlist penerbit, satu domain per baris |
+| `--learn-domains` / `--no-learn-domains` | tidak | mati | Tulis penerbit baru yang lolos filter ke file allowlist saat run selesai. Lihat [Menumbuhkan Allowlist](#menumbuhkan-allowlist---learn-domains) |
+| `--learn-min N` | tidak | `1` | Berapa kali sebuah domain harus muncul dalam satu run sebelum ikut ditulis `--learn-domains` |
 | `--headless` / `--headed` | tidak | `--headless` | Jalan tanpa / dengan jendela browser. Lihat [Headless & CAPTCHA](#headless--captcha) |
 | `--on-captcha {headed,skip}` | tidak | `headed` | Yang dilakukan run headless saat kena CAPTCHA. `skip` untuk run terjadwal |
 | `-h`, `--help` | — | — | Tampilkan bantuan |
@@ -993,6 +997,113 @@ Any real publisher listed above belongs in news_domains.txt.
 ```
 
 Inilah cara `news_domains.txt` tumbuh: yang benar-benar penerbit dipindahkan ke allowlist, sisanya membuktikan filternya bekerja.
+
+### Menumbuhkan Allowlist (`--learn-domains`)
+
+Laporan penolakan di atas hanya berisi host yang **dibuang**. Kebalikannya juga
+dicetak tiap run: penerbit yang **lolos** filter tapi belum terdaftar di
+`news_domains.txt` — persis kandidat isi allowlist.
+
+```text
+Penerbit di luar allowlist yang lolos filter: 1590 host, 5820 link
+     48  korupsi.id
+     36  suarapemerintah.id
+     34  idxchannel.com
+     33  gentra.co.id
+  ... dan 1580 host lagi
+Jalankan ulang dengan --learn-domains untuk menuliskannya ke allowlist.
+```
+
+`--learn-domains` menuliskannya langsung ke file, di bawah satu komentar
+bertanggal, jadi hasil satu run bisa ditinjau atau dibatalkan sebagai satu blok:
+
+```text
+# ditemukan otomatis saat crawl 2026-09-09
+aktual.com
+alinea.id
+korupsi.id
+```
+
+```bash
+# pungut semua penerbit baru run ini
+python linktaker.py --input keywords.txt --learn-domains
+
+# hanya yang muncul minimal 5 kali — menyaring situs yang cuma lewat sekali
+python linktaker.py --input keywords.txt --learn-domains --learn-min 5
+```
+
+#### Tanpa crawl ulang: `python -m linktaker.learn`
+
+Untuk menumbuhkan allowlist, membaca file hasil yang **sudah ada** hampir selalu
+jalan yang lebih baik daripada menunggu satu crawl penuh: selesai dalam hitungan
+detik, tidak membuka browser (jadi tidak ada CAPTCHA), dan bisa diulang dengan
+ambang berbeda atas data yang sama — termasuk hasil crawl bulan lalu.
+
+```bash
+# laporan saja — tidak ada file yang disentuh
+python -m linktaker.learn data/hasil/*.txt --min 5
+
+# tulis ke data/news_domains.txt
+python -m linktaker.learn data/hasil/*.txt --min 5 --write
+
+# bandingkan/tulis ke allowlist lain
+python -m linktaker.learn data/hasil/hasil.txt --news-domains data/kandidat.txt --write
+```
+
+```text
+12084 URL dari 4 file, dibandingkan dengan 330 domain di data/news_domains.txt
+Domain di luar allowlist: 1738 host, 142 di antaranya mencapai 5 link
+     70  korupsi.id
+     69  suarapemerintah.id
+     62  buseronline.com
+     50  insertrakyat.com
+  ... dan 130 domain lagi
+```
+
+Setiap URL dilewatkan gerbang yang sama persis dengan yang dipakai saat crawl,
+jadi hasilnya sama dengan `--learn-domains`. Bedanya cuma dari mana URL-nya
+datang: file hasil, bukan halaman pencarian. Modul ini hanya memakai pustaka
+standar, jadi bisa dijalankan di mesin yang tidak memasang Playwright.
+
+#### Di run terjadwal (PM2 / cron / systemd)
+
+`deploy/run-linktaker.sh` menjalankan langkah ini sendiri sesudah crawl dan
+submit, cukup dua baris di `deploy/linktaker.env`:
+
+```bash
+: "${LEARN_DOMAINS:=1}"
+: "${LEARN_MIN_HITS:=5}"
+```
+
+Perhitungannya lintas **seluruh** file di `data/hasil/` — bukan run terakhir
+saja. Ini penting: satu run terjadwal hanya menghasilkan beberapa ratus link,
+dan pada run 621 link tidak ada satu pun domain yang mencapai 5 kemunculan.
+Lintas jendela `KEEP_DAYS` hari (default 14) barulah ambang itu berarti. Karena
+itu `--learn-domains` di dalam crawl sengaja dimatikan oleh script deploy, supaya
+`LEARN_MIN_HITS` tidak berarti dua hal yang berbeda.
+
+Satu hal yang perlu diingat di mesin yang juga `git pull`: `news_domains.txt`
+ikut di-track, jadi blok yang ditulis otomatis jadi perubahan lokal yang
+menghalangi pull. Commit dulu blok itu sebelum menarik update — dan karena
+isinya memang penerbit yang ingin dipakai bersama, commit itu justru yang
+diinginkan.
+
+Yang perlu diketahui sebelum memakainya:
+
+- **Hanya jalan di `--news-filter smart`.** `strict` tidak pernah meloloskan
+  host baru, `off` tidak menyaring apa pun; keduanya ditolak dengan pesan.
+- **Domain yang sudah ada dilewati**, jadi menjalankannya berkali-kali tidak
+  menghasilkan baris ganda.
+- **`--learn-min 1` memungut banyak.** Satu run 9.901 link menghasilkan 1.590
+  host baru dengan ambang 1, 214 dengan ambang 3, dan 92 dengan ambang 5.
+- **Yang ditulis belum tentu penerbit.** Isinya apa pun yang lolos `smart` —
+  dari run contoh di atas ikut masuk `apple.com` (12 link). Karena domain di
+  allowlist melewati semua pemeriksaan negatif, tinjau blok bertanggalnya
+  sebelum di-commit.
+- **`news_domains.txt` ikut di-track git.** Di mesin yang juga `git pull`,
+  tulisan otomatis jadi perubahan lokal yang menghalangi pull — itu sebabnya
+  flag ini mati secara default. Untuk mesin yang memang bertugas mengumpulkan
+  domain, nyalakan permanen lewat `LEARN_DOMAINS=1` di `deploy/linktaker.env`.
 
 ### Efek pada Output Nyata
 

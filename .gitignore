@@ -3,6 +3,8 @@ data/hasil/
 data/logs/
 data/state/
 data/.linktaker.lock
+data/keywords-kpk-judul.txt
+data/keywords-kpk.txt
 # Input opsional yang isinya milik satu mesin saja.
 data/output.txt
 data/url.txt

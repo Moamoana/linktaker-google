@@ -261,6 +261,47 @@ class RejectionLog:
         return self.by_domain.most_common(limit)
 
 
+class LearnedDomains:
+    """Menghitung penerbit yang lolos gate tapi belum ada di allowlist.
+
+    Isinya persis kandidat isi news_domains.txt: host yang sudah melewati
+    seluruh aturan `smart` — bukan host non-berita yang dikenal, bukan domain
+    institusi, dan path-nya berbentuk artikel — hanya saja belum pernah
+    didaftarkan. `--learn-domains` di CLI yang menuliskannya ke file.
+
+    Hanya diisi di mode `smart`. Di `strict` tidak ada host baru yang bisa
+    lolos, dan di `off` tidak ada penilaian apa pun sehingga yang terkumpul
+    bukan daftar penerbit melainkan daftar seluruh host yang lewat.
+    """
+
+    def __init__(self):
+        self.by_domain = Counter()
+
+    def record(self, url: str):
+        try:
+            domain = registrable_domain(urlparse(url).netloc)
+        except ValueError:
+            return
+        if domain:
+            self.by_domain[domain] += 1
+
+    @property
+    def total(self) -> int:
+        return sum(self.by_domain.values())
+
+    def domains(self, min_hits: int = 1):
+        """Domain yang muncul minimal `min_hits` kali, urut abjad.
+
+        Ambang ini yang membedakan portal yang benar-benar dipakai dari satu
+        link nyasar: sebuah content farm biasanya menyumbang satu link dalam
+        satu run, penerbit sungguhan menyumbang banyak.
+        """
+        return sorted(d for d, n in self.by_domain.items() if n >= min_hits)
+
+    def top(self, limit: int = 15):
+        return self.by_domain.most_common(limit)
+
+
 # --- Run-wide state -------------------------------------------------------
 # `is_valid_result_url` is called from inside each engine's extractor, far from
 # the CLI, so the chosen mode lives here and `configure()` sets it once at
@@ -270,20 +311,35 @@ class RejectionLog:
 _mode = "smart"
 _allowlist = frozenset()
 rejected = RejectionLog()
+learned = LearnedDomains()
 
 
 def configure(mode: str, allowlist=frozenset()):
-    """Set the gate for this run and reset the rejection counters."""
-    global _mode, _allowlist, rejected
+    """Set the gate for this run and reset both counters."""
+    global _mode, _allowlist, rejected, learned
     _mode = mode
     _allowlist = frozenset(allowlist)
     rejected = RejectionLog()
+    learned = LearnedDomains()
 
 
 def accepts(url: str) -> bool:
-    """Apply the configured gate, recording anything it turns away."""
+    """Apply the configured gate, recording what it turns away and what is new."""
     if is_news_url(url, _mode, _allowlist):
+        _catat_kalau_belum_terdaftar(url)
         return True
     if _mode != "off":
         rejected.record(url)
     return False
+
+
+def _catat_kalau_belum_terdaftar(url: str):
+    """Simpan host yang diterima tapi belum ada di allowlist. Lihat `LearnedDomains`."""
+    if _mode != "smart":
+        return
+    try:
+        host = urlparse(url).netloc
+    except ValueError:
+        return
+    if not _host_matches(host, _allowlist):
+        learned.record(url)
