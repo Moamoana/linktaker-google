@@ -1,12 +1,10 @@
+"""URL helpers shared by every engine: AMP cleanup, social filter, validation."""
+
 import re
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
-from bs4 import BeautifulSoup
-
 from .config import SOCIAL_MEDIA_DOMAINS
-
-# Netloc fragments that mean "this is the search engine itself, not a result".
-GOOGLE_BAD_NETLOC = ("google.com", "google.co.", "gstatic.com", "googleusercontent.com")
+from .news_filter import accepts as accepts_as_news
 
 
 def strip_amp(url: str) -> str:
@@ -60,11 +58,15 @@ def is_social_media(url: str) -> bool:
         return False
 
 
-def is_valid_result_url(href: str, bad_netloc=GOOGLE_BAD_NETLOC) -> bool:
-    """Validate if URL is a real search result and not social media.
+def is_valid_result_url(href: str, bad_netloc=()) -> bool:
+    """Validate if URL is a real search result, not social media, and a news story.
 
     bad_netloc: host fragments belonging to the search engine itself, so its own
     internal links and ad redirects never reach the output file.
+
+    The news gate runs last so that the cheap structural checks reject first,
+    and so its rejection report only counts links that were otherwise usable.
+    See `news_filter` for what it drops and how `--news-filter` tunes it.
     """
     if not href:
         return False
@@ -89,40 +91,4 @@ def is_valid_result_url(href: str, bad_netloc=GOOGLE_BAD_NETLOC) -> bool:
     if any(b in p.netloc for b in bad_netloc):
         return False
 
-    return True
-
-
-def build_paginated_url(base_url: str, page_index: int) -> str:
-    """Build Google search URL with pagination."""
-    start = page_index * 10
-    p = urlparse(base_url)
-    q = parse_qs(p.query, keep_blank_values=True)
-    q["start"] = [str(start)]
-    new_query = urlencode({k: v[0] if isinstance(v, list) and len(v) == 1 else v for k, v in q.items()}, doseq=True)
-    return urlunparse((p.scheme, p.netloc, p.path, p.params, new_query, p.fragment))
-
-
-def extract_google_links(html_content: str) -> set:
-    """Extract all result links from Google HTML."""
-    links = set()
-    try:
-        soup = BeautifulSoup(html_content, "html.parser")
-
-        selectors = [
-            "div.g a[href]",
-            "div.SoaBEf a[href]",
-            "div.yuRUbf a[href]",
-            "div.MjjYud a[href]",
-            "a[jsname='UWckNb']",
-        ]
-
-        for selector in selectors:
-            for a in soup.select(selector):
-                href = a.get("href", "")
-                if is_valid_result_url(href):
-                    links.add(href)
-
-    except Exception as e:
-        print(f"  Error parsing HTML: {e}")
-
-    return links
+    return accepts_as_news(href)

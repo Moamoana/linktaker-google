@@ -5,26 +5,36 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from .browser import BrowserManager
+from . import news_filter
+from .browser import BrowserManager, reset_profile
 from .config import (
-    KEYWORDS_FILE, URLS_FILE, PROXIES_FILE, OUT_FILE,
-    MAX_PAGES_PER_SEARCH, DEFAULT_SORT, DEFAULT_ENGINE,
+    KEYWORDS_FILE, URLS_FILE, PROXIES_FILE, OUT_FILE, NEWS_DOMAINS_FILE,
+    MAX_PAGES_PER_SEARCH, DEFAULT_SORT, DEFAULT_ENGINE, NEWS_FILTER,
     FETCH_MODE, USE_GOOGLE_RSS, RSS_DECODE_DELAY,
     USE_CLOUDFLARE_BYPASS, PARALLEL_WORKERS, SOCIAL_MEDIA_DOMAINS,
+    PERSIST_PROFILE, BROWSER_PROFILE_DIR,
 )
 from .deps import CLOUDSCRAPER_AVAILABLE, STEALTH_AVAILABLE, BROWSERFORGE_AVAILABLE, PLAYWRIGHT_AVAILABLE
-from .engines import ENGINES, get_engine
+from .engines import ENGINES, MODE_LABELS, SEARCH_MODES, expand_mode, get_engine
 from .fetchers import process_one_url
-from .io_utils import read_urls, read_proxies, read_auth
-from .keywords import parse_date, read_keywords
+from .inputs import (parse_date, read_auth, read_keywords, read_news_domains,
+                     read_proxies, read_urls)
 from .url_utils import strip_amp
 
 EXAMPLE = """example:
   python linktaker.py --input keyword1.txt --from 2026-08-08 --until 2026-08-16 --sort latest --output hasil.txt --max-pages 2
 
   python linktaker.py --engine bing --input keyword1.txt --from 2026-08-08 --until 2026-08-16 --sort latest
+  python linktaker.py --engine yahoo --input keyword1.txt --from 2026-08-08 --until 2026-08-16
   python linktaker.py --input keyword1.txt
+  python linktaker.py --input keyword1.txt --mode both --from 2026-08-08 --until 2026-08-16
   python linktaker.py --input keyword1.txt --proxy http://user:password@proxycrawler.dashboard.nolimit.id:2570
+
+  # news only, allowlisted publishers exclusively (bing and yahoo need this most)
+  python linktaker.py --engine bing --input keyword1.txt --news-filter strict
+
+  # run google, yahoo and bing back to back into one merged output file
+  python linktaker.py --engine all --input keyword1.txt --from 2026-08-18 --until 2026-08-24 --sort latest --mode both --output hasil.txt
 """
 
 
@@ -47,8 +57,9 @@ def build_parser():
         epilog=EXAMPLE,
     )
     parser.add_argument(
-        "--engine", choices=tuple(ENGINES), default=DEFAULT_ENGINE,
-        help=f"search engine to crawl (default: {DEFAULT_ENGINE})",
+        "--engine", choices=tuple(ENGINES) + ("all",), default=DEFAULT_ENGINE,
+        help=f"search engine to crawl, or 'all' to run google, yahoo and bing "
+             f"back to back into one merged output file (default: {DEFAULT_ENGINE})",
     )
     parser.add_argument(
         "--input", metavar="FILE", default=KEYWORDS_FILE,
@@ -80,9 +91,31 @@ def build_parser():
         help="proxy to route requests through, e.g. http://user:password@host:2570 (default: no proxy)",
     )
     parser.add_argument(
-        "--mode", choices=("nws", "web"), default=None,
-        help="news search (nws) or regular web search (web) "
-             "(default: nws for google, web for bing)",
+        "--fresh-profile", "--fresh_profile", dest="fresh_profile", action="store_true",
+        help=f"delete {BROWSER_PROFILE_DIR}/ and its pinned fingerprint before "
+             f"starting, so the run begins from a clean browser. Use this when "
+             f"the saved profile itself has been flagged and every search is "
+             f"landing on a CAPTCHA",
+    )
+    parser.add_argument(
+        "--mode", choices=SEARCH_MODES, default=None,
+        help="which tab to search: web = all tab, nws = news tab, "
+             "both = all tab + news tab merged "
+             "(default: web for google/bing/yahoo)",
+    )
+    parser.add_argument(
+        "--news-filter", "--news_filter", dest="news_filter",
+        choices=("smart", "strict", "off"), default=NEWS_FILTER,
+        help=f"keep only news articles in the output: smart = drop known "
+             f"non-news hosts and non-article URLs, strict = only hosts in "
+             f"{NEWS_DOMAINS_FILE}, off = keep everything "
+             f"(default: {NEWS_FILTER})",
+    )
+    parser.add_argument(
+        "--news-domains", "--news_domains", dest="news_domains",
+        metavar="FILE", default=NEWS_DOMAINS_FILE,
+        help=f"publisher allowlist, one domain per line "
+             f"(default: {NEWS_DOMAINS_FILE})",
     )
     return parser
 
@@ -91,9 +124,13 @@ def parse_args(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    args.engine = get_engine(args.engine)
-    if args.mode is None:
-        args.mode = args.engine.default_mode
+    if args.engine == "all":
+        # Per-engine mode default is resolved per iteration in main().
+        pass
+    else:
+        args.engine = get_engine(args.engine)
+        if args.mode is None:
+            args.mode = args.engine.default_mode
 
     if args.date_from:
         try:
@@ -110,11 +147,17 @@ def parse_args(argv=None):
     if args.date_from and args.date_until and args.date_from > args.date_until:
         parser.error(f"--from ({args.date_from}) is later than --until ({args.date_until})")
 
+    args.allowlist = read_news_domains(args.news_domains)
+    if args.news_filter == "strict" and not args.allowlist:
+        parser.error(f"--news-filter strict needs a populated {args.news_domains}, "
+                     f"otherwise every link is rejected. Add domains to it, point "
+                     f"--news-domains at another file, or use --news-filter smart.")
+
     return args
 
 
-def build_urls(args):
-    """Turn the keyword input file into a list of Google search URLs."""
+def build_urls(args, engine, mode):
+    """Turn the keyword input file into a list of search URLs for one engine."""
     if os.path.exists(args.input):
         keywords = read_keywords(args.input)
         if not keywords:
@@ -122,10 +165,15 @@ def build_urls(args):
             sys.exit(1)
 
         print(f"Loaded {len(keywords)} keyword(s) from {args.input}")
-        return [
-            args.engine.build_search_url(kw, args.date_from, args.date_until, args.sort, args.mode)
-            for kw in keywords
-        ]
+        urls = []
+        for kw in keywords:
+            for m in expand_mode(mode):
+                url = engine.build_search_url(kw, args.date_from, args.date_until,
+                                               args.sort, m)
+                # Yahoo builds the same URL for either vertical — crawl it once.
+                if url not in urls:
+                    urls.append(url)
+        return urls
 
     # Fallback: pre-built Google search URLs (backwards compatible).
     if os.path.exists(URLS_FILE):
@@ -148,7 +196,7 @@ def resolve_proxies(args):
     return []
 
 
-def describe_run(args, url_count):
+def describe_run(args, engine, mode, url_count):
     """Print what this run is about to do."""
     if args.date_from and args.date_until:
         date_range = f"{args.date_from} .. {args.date_until}"
@@ -160,28 +208,47 @@ def describe_run(args, url_count):
         date_range = "any date"
 
     pages = "all" if args.max_pages is None else str(args.max_pages)
-    print(f"Processing {url_count} search(es) on {args.engine.name} "
-          f"— fetch mode: {FETCH_MODE}, search: {args.mode}")
+    print(f"Processing {url_count} search(es) on {engine.name} "
+          f"— fetch mode: {FETCH_MODE}, search: {MODE_LABELS.get(mode, mode)}")
     print(f"Date: {date_range} | Sort: {args.sort} | Max pages: {pages} | Output: {args.output}")
 
-    has_dates = bool(args.date_from or args.date_until)
-    for note in args.engine.capability_notes(args.mode, args.sort, has_dates):
+    if args.news_filter == "off":
+        print("News filter: OFF — every non-social link is kept, including "
+              "dictionaries, shops and tools")
+    else:
+        print(f"News filter: {args.news_filter} "
+              f"({len(args.allowlist)} publisher(s) from {args.news_domains})")
+
+    if PERSIST_PROFILE:
+        print(f"Browser profile: PERSISTENT ({BROWSER_PROFILE_DIR}/) — "
+              f"cookies carry over between runs; --fresh-profile resets it")
+    else:
+        print("Browser profile: fresh each run (PERSIST_PROFILE is off) — "
+              "expect a challenge on the first search")
+
+    if args.max_pages is None:
+        print("Max pages: all — crawling deep into the result set is the biggest "
+              "remaining CAPTCHA trigger; --max-pages 5 cuts it sharply")
+
+    for note in engine.capability_notes(mode, args.sort, args.date_from, args.date_until):
         print(note)
 
 
-def main(argv=None):
-    """Main execution."""
-    args = parse_args(argv)
-
-    urls = build_urls(args)
+def crawl_engine(args, engine, mode):
+    """Run one engine's crawl for every keyword, returning the unique links found."""
+    urls = build_urls(args, engine, mode)
     proxies = resolve_proxies(args)
     auth = read_auth()
 
-    describe_run(args, len(urls))
+    describe_run(args, engine, mode, len(urls))
     print(f"Filtering social media URLs ({len(SOCIAL_MEDIA_DOMAINS)} domains excluded)")
 
-    if USE_GOOGLE_RSS and args.engine.name == "google":
-        print(f"Google News RSS: ENABLED (decode delay: {RSS_DECODE_DELAY}s)")
+    if USE_GOOGLE_RSS and engine.name == "google":
+        # The RSS feed is a news-tab feature; an All-tab URL has no feed to read.
+        if "nws" in expand_mode(mode):
+            print(f"Google News RSS: ENABLED (decode delay: {RSS_DECODE_DELAY}s)")
+        else:
+            print("Google News RSS: skipped — it only covers the news tab (--mode nws/both)")
 
     if proxies:
         print(f"Proxy enabled ({len(proxies)} proxy/proxies)")
@@ -217,10 +284,10 @@ def main(argv=None):
             random.shuffle(shuffled)
             for i, u in enumerate(shuffled):
                 all_links |= (process_one_url(u, None, auth, browser_mgr,
-                                              args.max_pages, args.engine) or set())
+                                              args.max_pages, engine) or set())
                 # Jitter between search URLs to avoid burst-rate detection
                 if i < len(shuffled) - 1:
-                    delay = random.uniform(8, 20)
+                    delay = random.uniform(1, 5)
                     print(f"  Waiting {delay:.1f}s before next URL...")
                     time.sleep(delay)
         else:
@@ -231,7 +298,7 @@ def main(argv=None):
                     for u in urls:
                         proxy = random.choice(proxies) if proxies else None
                         futures[ex.submit(process_one_url, u, proxy, auth, browser_mgr,
-                                          args.max_pages, args.engine)] = u
+                                          args.max_pages, engine)] = u
 
                     for fut in as_completed(futures):
                         u = futures[fut]
@@ -244,7 +311,7 @@ def main(argv=None):
                 for u in urls:
                     proxy = random.choice(proxies) if proxies else None
                     all_links |= (process_one_url(u, proxy, auth, browser_mgr,
-                                                  args.max_pages, args.engine) or set())
+                                                  args.max_pages, engine) or set())
     finally:
         # Always close browser
         if browser_mgr:
@@ -252,7 +319,32 @@ def main(argv=None):
             print(f"Browser closed")
 
     # Strip AMP from all collected links
-    all_links = {strip_amp(link) for link in all_links}
+    return {strip_amp(link) for link in all_links}
+
+
+def main(argv=None):
+    """Main execution."""
+    args = parse_args(argv)
+
+    if args.fresh_profile:
+        reset_profile()
+
+    # Arm the news gate before any extractor runs — every engine reaches it
+    # through url_utils.is_valid_result_url.
+    news_filter.configure(args.news_filter, args.allowlist)
+
+    if args.engine == "all":
+        # Google, then Yahoo, then Bing — one after another, merged into one output.
+        engines_to_run = [ENGINES["google"], ENGINES["yahoo"], ENGINES["bing"]]
+    else:
+        engines_to_run = [args.engine]
+
+    all_links = set()
+    for i, engine in enumerate(engines_to_run):
+        if len(engines_to_run) > 1:
+            print(f"\n=== Engine {i + 1}/{len(engines_to_run)}: {engine.name} ===")
+        mode = args.mode or engine.default_mode
+        all_links |= crawl_engine(args, engine, mode)
 
     # Write results
     out_dir = os.path.dirname(os.path.abspath(args.output))
@@ -263,3 +355,27 @@ def main(argv=None):
             f.write(link + "\n")
 
     print(f"\nLinks saved to {args.output} (unique: {len(all_links)})")
+    report_rejections()
+
+
+def report_rejections(limit: int = 15):
+    """List the hosts the news gate turned away, busiest first.
+
+    This is how news_domains.txt grows: anything in here that is actually a
+    publisher belongs in the allowlist, and anything that is not confirms the
+    gate did its job.
+    """
+    dropped = news_filter.rejected
+    if not dropped.total:
+        return
+
+    top = dropped.top(limit)
+    print(f"News filter dropped {dropped.total} link(s) from "
+          f"{len(dropped.by_domain)} host(s):")
+    for domain, count in top:
+        print(f"  {count:>5}  {domain}")
+
+    remaining = len(dropped.by_domain) - len(top)
+    if remaining > 0:
+        print(f"  ... and {remaining} more host(s)")
+    print(f"Any real publisher listed above belongs in {NEWS_DOMAINS_FILE}.")
